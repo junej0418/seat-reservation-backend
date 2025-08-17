@@ -16,42 +16,37 @@ const server = http.createServer(app);
 // 프론트엔드가 실행될 수 있는 모든 주소를 여기에 명시해야 합니다.
 // 로컬 개발 환경에서 사용될 수 있는 모든 예상 주소들을 포함합니다.
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (가장 중요)
-   'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
-  'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
-  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
-
-  // *** 여기를 수정합니다! 오류 메시지에 나온 주소를 그대로 추가하세요. ***
-  'http://172.20.10.6:5501', // <-- 이 줄을 추가합니다.
-  'https://heartfelt-cannoli-903df2.netlify.app/'
-
-
-  // *** 중요: 만약 여러분의 PC가 특정 로컬 네트워크 IP 주소로 할당되어 있고,
-  //      다른 기기(스마트폰 등)에서 그 IP를 통해 프론트엔드에 접속할 경우,
-  //      그 IP 주소와 Live Server 포트 조합을 여기에 추가해야 합니다.
-  //      예시: 'http://192.168.0.10:5500' (여러분 PC의 실제 IP로 변경)
-
-  // *** 중요: Netlify로 프론트엔드를 배포할 경우, Netlify가 할당하는 도메인 주소를 여기에 추가해야 합니다.
-  //      예시: 'https://your-netlify-app-name.netlify.app'
-  //      만약 Netlify에서 사용자 지정 도메인(예: www.my-domain.com)을 사용한다면 그 주소도 추가해야 합니다.
-  //      예시: 'https://www.your-custom-domain.com'
+  'http://localhost:5500',
+  'http://127.0.0.1:5500',
+  null,
+  'https://heartfelt-cannoli-903df2.netlify.app', // 프론트엔드 Netlify URL 정확히 추가 (복사한 주소)
+  // 필요 시 다른 IP나 도메인 추가
 ];
 
-// 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정 (Socket.IO 통신을 위한 CORS)
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = '허용되지 않은 출처: ' + origin;
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
+
 const io = new Server(server, {
   cors: {
-    origin: function(origin, callback) { // 요청 origin을 허용 목록에서 확인
-      if (!origin) return callback(null, true); // origin이 없는 경우 (예: Postman) 허용
-      if (!allowedOrigins.includes(origin)) { // allowedOrigins 배열에 origin이 포함되어 있는지 확인
-        const msg = `CORS 허용되지 않은 출처입니다: ${origin}`;
+    origin: function(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.indexOf(origin) === -1) {
+        const msg = '허용되지 않은 출처: ' + origin;
         return callback(new Error(msg), false);
       }
-      return callback(null, true); // 허용된 출처이면 통과
+      return callback(null, true);
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Socket.IO 통신에 필요한 메서드
-    credentials: true // 크리덴셜 (쿠키, 인증 헤더 등) 전송 허용
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
   }
 });
 
