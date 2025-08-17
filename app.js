@@ -25,7 +25,7 @@ const allowedOrigins = [
 
   // *** 여기를 수정합니다! 오류 메시지에 나온 주소를 그대로 추가하세요. ***
   'http://172.20.10.6:5501', // <-- 이 줄을 추가합니다.
-  'https://heartfelt-cannoli-903df2.netlify.app/', // Netlify로 배포된 프론트엔드 주소 (예시)
+  'https://heartfelt-cannoli-903df2.netlify.app/'
 
 
   // *** 중요: 만약 여러분의 PC가 특정 로컬 네트워크 IP 주소로 할당되어 있고,
