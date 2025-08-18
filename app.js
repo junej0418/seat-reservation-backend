@@ -16,37 +16,36 @@ const server = http.createServer(app);
 // 프론트엔드가 실행될 수 있는 모든 주소를 여기에 명시해야 합니다.
 // 로컬 개발 환경에서 사용될 수 있는 모든 예상 주소들을 포함합니다.
 const allowedOrigins = [
-  'http://localhost:5500',
-  'http://127.0.0.1:5500',
-  null,
-  'https://heartfelt-cannoli-903df2.netlify.app', // 프론트엔드 Netlify URL 정확히 추가 (복사한 주소)
-  // 필요 시 다른 IP나 도메인 추가
+  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (가장 중요)
+  'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
+  'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
+  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
+  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
+  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
+
+  // *** 중요: Netlify로 프론트엔드를 배포할 경우, Netlify가 할당하는 도메인 주소를 여기에 추가해야 합니다.
+  //      예시: 'https://your-netlify-app-name.netlify.app'
+  //      정확한 여러분의 Netlify 프론트엔드 주소로 바꿔주세요.
+  'https://heartfelt-cannoli-903df2.netlify.app' // <-- 실제 여러분의 Netlify 프론트엔드 주소로 교체!
+
+  // 만약 다른 기기(스마트폰 등)에서 로컬 네트워크 IP를 통해 프론트엔드에 접속할 경우,
+  // 그 IP 주소와 Live Server 포트 조합을 여기에 추가해야 합니다.
+  // 예시: 'http://192.168.0.10:5500' (여러분 PC의 실제 IP로 변경)
 ];
 
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = '허용되지 않은 출처: ' + origin;
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  credentials: true
-}));
-
+// 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정 (Socket.IO 통신을 위한 CORS)
 const io = new Server(server, {
   cors: {
-    origin: function(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.indexOf(origin) === -1) {
-        const msg = '허용되지 않은 출처: ' + origin;
+    origin: function(origin, callback) { // 요청 origin을 허용 목록에서 확인
+      if (!origin) return callback(null, true); // origin이 없는 경우 (예: Postman) 허용
+      if (!allowedOrigins.includes(origin)) { // allowedOrigins 배열에 origin이 포함되어 있지 않으면 오류 반환
+        const msg = `CORS 허용되지 않은 출처입니다: ${origin}`;
         return callback(new Error(msg), false);
       }
-      return callback(null, true);
+      return callback(null, true); // 허용된 출처이면 통과
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true
+    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Socket.IO 통신에 필요한 메서드
+    credentials: true // 크리덴셜 (쿠키, 인증 헤더 등) 전송 허용
   }
 });
 
@@ -187,7 +186,25 @@ app.delete('/api/reservations/user/:roomNo/:name', async (req, res) => {
   }
 });
 
-// 9-5. 관리자 예약 시간 설정 조회 API (GET 요청)
+// 9-5. 모든 예약 삭제 API (DELETE 요청 - 관리자용)
+// 경로: /api/reservations/all
+app.delete('/api/reservations/all', async (req, res) => {
+  try {
+    await Reservation.deleteMany({}); // 모든 Reservation 문서 삭제
+    
+    // 데이터 변경 후 모든 클라이언트에 실시간 알림
+    const allReservations = await Reservation.find({}); // 이제 비어있는 배열이 될 것
+    io.emit('reservationsUpdated', allReservations); // 최신 예약 목록을 Socket.IO로 전송
+
+    res.status(200).json({ message: '모든 예약이 성공적으로 취소되었습니다.' });
+  } catch (error) {
+    console.error('API 에러: 모든 예약 삭제 실패:', error);
+    res.status(500).json({ message: '모든 예약 삭제에 실패했습니다.', error: error.message });
+  }
+});
+
+
+// 9-6. 관리자 예약 시간 설정 조회 API (GET 요청)
 // 관리자 페이지 진입 시 현재 설정된 예약 시간을 불러올 때 사용
 app.get('/api/admin-settings', async (req, res) => {
   try {
@@ -203,7 +220,7 @@ app.get('/api/admin-settings', async (req, res) => {
   }
 });
 
-// 9-6. 관리자 예약 시간 설정 업데이트 API (PUT 요청)
+// 9-7. 관리자 예약 시간 설정 업데이트 API (PUT 요청)
 // 관리자가 예약 가능 시간을 설정하고 저장할 때 사용
 app.put('/api/admin-settings', async (req, res) => {
   const { reservationStartTime, reservationEndTime } = req.body; // 요청 본문에서 시간 데이터 추출
