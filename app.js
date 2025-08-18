@@ -21,16 +21,17 @@ const allowedOrigins = [
   'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
   'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
   'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
-  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
+  null                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
+
+  // *** 중요: 만약 여러분의 PC가 특정 로컬 네트워크 IP 주소로 할당되어 있고,
+  //      다른 기기(스마트폰 등)에서 그 IP를 통해 프론트엔드에 접속할 경우,
+  //      그 IP 주소와 Live Server 포트 조합을 여기에 추가해야 합니다.
+  //      예시: 'http://192.168.0.10:5500' (여러분 PC의 실제 IP로 변경)
 
   // *** 중요: Netlify로 프론트엔드를 배포할 경우, Netlify가 할당하는 도메인 주소를 여기에 추가해야 합니다.
   //      예시: 'https://your-netlify-app-name.netlify.app'
-  //      정확한 여러분의 Netlify 프론트엔드 주소로 바꿔주세요.
-  'https://heartfelt-cannoli-903df2.netlify.app' // <-- 실제 여러분의 Netlify 프론트엔드 주소로 교체!
-
-  // 만약 다른 기기(스마트폰 등)에서 로컬 네트워크 IP를 통해 프론트엔드에 접속할 경우,
-  // 그 IP 주소와 Live Server 포트 조합을 여기에 추가해야 합니다.
-  // 예시: 'http://192.168.0.10:5500' (여러분 PC의 실제 IP로 변경)
+  //      만약 Netlify에서 사용자 지정 도메인(예: www.my-domain.com)을 사용한다면 그 주소도 추가해야 합니다.
+  //      예시: 'https://www.your-custom-domain.com'
 ];
 
 // 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정 (Socket.IO 통신을 위한 CORS)
@@ -38,7 +39,7 @@ const io = new Server(server, {
   cors: {
     origin: function(origin, callback) { // 요청 origin을 허용 목록에서 확인
       if (!origin) return callback(null, true); // origin이 없는 경우 (예: Postman) 허용
-      if (!allowedOrigins.includes(origin)) { // allowedOrigins 배열에 origin이 포함되어 있지 않으면 오류 반환
+      if (!allowedOrigins.includes(origin)) { // allowedOrigins 배열에 origin이 포함되어 있는지 확인
         const msg = `CORS 허용되지 않은 출처입니다: ${origin}`;
         return callback(new Error(msg), false);
       }
@@ -144,8 +145,25 @@ app.post('/api/reservations', async (req, res) => {
   }
 });
 
-// 9-3. 예약 삭제 API (DELETE 요청 - 관리자용, 예약 고유 _id 기준)
-// 관리자 페이지에서 특정 예약을 취소할 때 사용
+// 9-3. 모든 예약 삭제 API (DELETE 요청 - 관리자용)
+// 경로: /api/reservations/all   <--- 이 라우트가 ID 삭제 라우트보다 먼저 와야 합니다.
+app.delete('/api/reservations/all', async (req, res) => {
+  try {
+    await Reservation.deleteMany({}); // 모든 Reservation 문서 삭제
+    
+    // 데이터 변경 후 모든 클라이언트에 실시간 알림
+    const allReservations = await Reservation.find({}); // 이제 비어있는 배열이 될 것
+    io.emit('reservationsUpdated', allReservations); // 최신 예약 목록을 Socket.IO로 전송
+
+    res.status(200).json({ message: '모든 예약이 성공적으로 취소되었습니다.' });
+  } catch (error) {
+    console.error('API 에러: 모든 예약 삭제 실패:', error);
+    res.status(500).json({ message: '모든 예약 삭제에 실패했습니다.', error: error.message });
+  }
+});
+
+// 9-4. 예약 삭제 API (DELETE 요청 - 관리자용, 예약 고유 _id 기준)
+// 경로: /api/reservations/:id  <--- 이 라우트가 '/all' 라우트 뒤에 와야 합니다.
 app.delete('/api/reservations/:id', async (req, res) => {
   try {
     const { id } = req.params; // URL 파라미터에서 예약 _id 추출
@@ -166,7 +184,7 @@ app.delete('/api/reservations/:id', async (req, res) => {
   }
 });
 
-// 9-4. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준)
+// 9-5. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준)
 // 사용자가 자신의 예약 자리를 변경할 때 프론트엔드에서 자동으로 호출
 app.delete('/api/reservations/user/:roomNo/:name', async (req, res) => {
   try {
@@ -183,23 +201,6 @@ app.delete('/api/reservations/user/:roomNo/:name', async (req, res) => {
   } catch (error) {
     console.error('API 에러: 사용자 예약 삭제 실패:', error);
     res.status(500).json({ message: '사용자 예약 삭제 실패.', error: error.message });
-  }
-});
-
-// 9-5. 모든 예약 삭제 API (DELETE 요청 - 관리자용)
-// 경로: /api/reservations/all
-app.delete('/api/reservations/all', async (req, res) => {
-  try {
-    await Reservation.deleteMany({}); // 모든 Reservation 문서 삭제
-    
-    // 데이터 변경 후 모든 클라이언트에 실시간 알림
-    const allReservations = await Reservation.find({}); // 이제 비어있는 배열이 될 것
-    io.emit('reservationsUpdated', allReservations); // 최신 예약 목록을 Socket.IO로 전송
-
-    res.status(200).json({ message: '모든 예약이 성공적으로 취소되었습니다.' });
-  } catch (error) {
-    console.error('API 에러: 모든 예약 삭제 실패:', error);
-    res.status(500).json({ message: '모든 예약 삭제에 실패했습니다.', error: error.message });
   }
 });
 
