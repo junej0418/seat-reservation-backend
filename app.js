@@ -16,23 +16,18 @@ const server = http.createServer(app);
 // 프론트엔드가 실행될 수 있는 모든 주소를 여기에 명시해야 합니다.
 // 로컬 개발 환경에서 사용될 수 있는 모든 예상 주소들을 포함합니다.
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (가장 중요)
+  process.env.FRONTEND_URL, // .env 파일에서 불러온 주소 (로컬 개발용)
   'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
   'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
-  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
-  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
-  null,                       // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
-  'https://heartfelt-cannoli-903df2.netlify.app/', // Netlify로 배포된 프론트엔드 주소 
+  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
+  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
+  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때
 
-  // *** 중요: 만약 여러분의 PC가 특정 로컬 네트워크 IP 주소로 할당되어 있고,
-  //      다른 기기(스마트폰 등)에서 그 IP를 통해 프론트엔드에 접속할 경우,
-  //      그 IP 주소와 Live Server 포트 조합을 여기에 추가해야 합니다.
-  //      예시: 'http://192.168.0.10:5500' (여러분 PC의 실제 IP로 변경)
+  // ===>>> 이 부분이 정확한지 눈으로 직접 확인하세요! <<<===
+  'https://heartfelt-cannoli-903df2.netlify.app', // <-- 이 주소가 정확히 들어가 있나요?
 
-  // *** 중요: Netlify로 프론트엔드를 배포할 경우, Netlify가 할당하는 도메인 주소를 여기에 추가해야 합니다.
-  //      예시: 'https://your-netlify-app-name.netlify.app'
-  //      만약 Netlify에서 사용자 지정 도메인(예: www.my-domain.com)을 사용한다면 그 주소도 추가해야 합니다.
-  //      예시: 'https://www.your-custom-domain.com'
+  // 다른 로컬 네트워크 IP 주소로 프론트엔드를 테스트했었다면 여기에 추가 유지:
+  // 'http://172.20.10.6:5501',
 ];
 
 // 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정 (Socket.IO 통신을 위한 CORS)
