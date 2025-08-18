@@ -21,7 +21,8 @@ const allowedOrigins = [
   'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
   'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
   'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음 (선택적이지만 안전상 포함)
-  null                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
+  null,                       // HTML 파일을 로컬 시스템(file://)에서 직접 열 때 origin이 'null'로 인식될 수 있음
+  'https://heartfelt-cannoli-903df2.netlify.app/', // Netlify로 배포된 프론트엔드 주소 
 
   // *** 중요: 만약 여러분의 PC가 특정 로컬 네트워크 IP 주소로 할당되어 있고,
   //      다른 기기(스마트폰 등)에서 그 IP를 통해 프론트엔드에 접속할 경우,
