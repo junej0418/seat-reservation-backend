@@ -8,7 +8,7 @@ const http = require('http');
 const { Server } = require('socket.io'); 
 require('dotenv').config(); 
 
-// --- 새로운 기능: 요청 속도 제한 (Rate Limiting)을 위한 패키지 ---
+// --- 요청 속도 제한 (Rate Limiting)을 위한 패키지 ---
 const rateLimit = require('express-rate-limit'); 
 
 // 2. Express 애플리케이션 생성 및 HTTP 서버 연결
@@ -17,15 +17,16 @@ const server = http.createServer(app);
 
 // --- 3. CORS (Cross-Origin Resource Sharing) 허용 출처 설정 ---
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'http://localhost:5500',   
-  'http://127.0.0.1:5500',   
-  'http://localhost:3000',   
-  'http://127.0.0.1:3000',   
-  null,                      
-  // 여러분의 Netlify 프론트엔드 주소로 정확히 교체!
+  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (로컬 개발용)
+  'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
+  'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
+  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
+  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
+  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때
+
+  // ⭐ 여러분의 Netlify 프론트엔드 주소를 여기에 정확히 넣어주세요! ⭐
   'https://heartfelt-cannoli-903df2.netlify.app', 
-  // 필요시 추가적인 로컬 IP나 커스텀 도메인
+  // 추가적인 로컬 IP나 커스텀 도메인
 ];
 
 // 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정
@@ -47,6 +48,7 @@ const io = new Server(server, {
 // 5. 서버 포트와 MongoDB 연결 URI를 .env 파일에서 로드
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
+// 관리자 비밀번호를 환경 변수에서 불러옵니다.
 const ADMIN_PASSWORD_SERVER = process.env.ADMIN_PASSWORD; 
 
 // 6. 미들웨어 설정
@@ -63,14 +65,14 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// --- 새로운 기능: 요청 속도 제한 (Rate Limiting) 설정 ---
+// --- 요청 속도 제한 (Rate Limiting) 설정 ---
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1분 (분:분:초)
-  max: 20, // 1분당 최대 요청 20개 (동일 IP 기준)
+  windowMs: 1 * 60 * 1000, // 1분
+  max: 20, // 1분당 최대 요청 20개
   message: "잠시 후 다시 시도해주세요. 너무 많은 요청이 감지되었습니다.",
-  standardHeaders: true, // `RateLimit-*` 헤더 추가
-  legacyHeaders: false, // `X-RateLimit-*` 헤더 비활성화
-  skip: (req, res) => req.path === '/api/reservations/all', // 모든 예약 삭제 요청에는 적용 안 함 (관리자 기능)
+  standardHeaders: true, 
+  legacyHeaders: false, 
+  skip: (req, res) => req.path === '/api/reservations/all', // 관리자 기능은 제한하지 않음
 });
 
 // 7. MongoDB 데이터베이스 연결
@@ -98,6 +100,15 @@ const adminSettingSchema = new mongoose.Schema({
 });
 const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema); 
 
+// --- 새로운 스키마: 공지사항 관리 ---
+const announcementSchema = new mongoose.Schema({
+    key: { type: String, unique: true, default: 'currentAnnouncement' }, // 공지사항 문서가 하나만 존재하도록
+    message: { type: String, default: '' }, // 공지 메시지 내용
+    active: { type: Boolean, default: false }, // 공지 활성화/비활성화
+    updatedAt: { type: Date, default: Date.now } // 마지막 업데이트 시간
+});
+const Announcement = mongoose.model('Announcement', announcementSchema);
+
 // --- API 엔드포인트 정의 ---
 
 // 관리자 로그인 API
@@ -111,11 +122,15 @@ app.post('/api/admin-login', (req, res) => {
     return res.status(500).json({ success: false, message: '서버 관리자 비밀번호가 설정되지 않았습니다.' });
   }
   if (password === ADMIN_PASSWORD_SERVER) {
+    // ⭐ 새로운 기능: 관리자 로그인 성공 기록 ⭐
+    console.log(`✅ 관리자 로그인 성공: ${new Date().toLocaleString()} (IP: ${req.ip})`);
     res.status(200).json({ success: true, message: '관리자 로그인 성공' });
   } else {
+    console.warn(`⚠️ 관리자 로그인 실패 시도: ${new Date().toLocaleString()} (IP: ${req.ip})`);
     res.status(401).json({ success: false, message: '비밀번호가 틀렸습니다.' });
   }
 });
+
 
 // 9-1. 모든 예약 정보 조회 API (GET 요청)
 app.get('/api/reservations', async (req, res) => {
@@ -130,7 +145,7 @@ app.get('/api/reservations', async (req, res) => {
 
 // 9-2. 새로운 예약 생성 API (POST 요청) - Rate Limiting & 허니팟 검증 적용
 app.post('/api/reservations', limiter, async (req, res) => { 
-  // --- 새로운 기능: 허니팟(Honeypot) 필드 검증 ---
+  // 허니팟(Honeypot) 필드 검증
   if (req.body.honeypot_field) { 
       console.warn('🍯 Honeypot field filled. Likely a bot:', req.ip);
       return res.status(400).json({ message: '비정상적인 요청이 감지되었습니다. (Honeypot)' });
@@ -138,7 +153,7 @@ app.post('/api/reservations', limiter, async (req, res) => {
   
   const { roomNo, name, dormitory, floor, seat } = req.body;
   
-  // --- 새로운 기능: 백엔드 입력 유효성 검증 ---
+  // 백엔드 입력 유효성 검증
   if (!roomNo || !name || !dormitory || !floor || seat === undefined || seat === null) {
       return res.status(400).json({ message: '모든 예약 정보를 정확히 입력해주세요.' });
   }
@@ -156,7 +171,7 @@ app.post('/api/reservations', limiter, async (req, res) => {
       return res.status(400).json({ message: '층 또는 좌석 번호가 올바르지 않습니다.' });
   }
   
-  // --- 새로운 기능: 백엔드에서 예약 시간 검증 ---
+  // 백엔드에서 예약 시간 검증
   const adminSettings = await AdminSetting.findOne({ key: 'reservationTimes' });
   if (!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime) {
       return res.status(403).json({ message: '관리자가 예약 가능 시간을 설정하지 않았습니다.' });
@@ -173,22 +188,20 @@ app.post('/api/reservations', limiter, async (req, res) => {
   try {
     const existUser = await Reservation.findOne({ roomNo, name });
     if (existUser) {
-      // 기존 예약이 있는 사용자가 새로운 좌석을 예약하려 할 때
-      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); // ✨ 변수에 값 할당 ✨
-      await newReservationInstance.save(); // 새 예약 먼저 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
-      await Reservation.deleteOne({ _id: existUser._id }); // 이전 예약 삭제
+      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); 
+      await newReservationInstance.save(); 
+      await Reservation.deleteOne({ _id: existUser._id }); 
     } else {
-      // 기존 예약이 없는 새로운 사용자
-      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); // ✨ 변수에 값 할당 ✨
-      await newReservationInstance.save(); // 새 예약 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
+      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); 
+      await newReservationInstance.save(); 
     }
 
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
 
-    res.status(201).json({ message: '예약 성공!', newReservation: newReservationInstance }); // ✨ 선언된 변수 사용 ✨
+    res.status(201).json({ message: '예약 성공!', newReservation: newReservationInstance });
   } catch (error) {
-    if (error.code === 11000) { // MongoDB duplicate key error (unique index 위반)
+    if (error.code === 11000) { 
         if (error.message.includes('roomNo_1_name_1')) {
             return res.status(409).json({ message: '이미 이 룸 번호와 이름으로 예약이 존재합니다.' });
         }
@@ -236,7 +249,7 @@ app.delete('/api/reservations/:id', async (req, res) => {
   }
 });
 
-// 9-5. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준) - 사실상 이 API는 이제 POST에서 처리
+// 9-5. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준)
 app.delete('/api/reservations/user/:roomNo/:name', async (req, res) => {
   try {
     const { roomNo, name } = req.params; 
@@ -286,6 +299,44 @@ app.put('/api/admin-settings', async (req, res) => {
     res.status(500).json({ message: '관리자 설정 저장 실패.', error: error.message });
   }
 });
+
+// --- 새로운 API: 공지사항 조회 (GET) ---
+app.get('/api/announcement', async (req, res) => {
+  try {
+    // 'currentAnnouncement' 키를 가진 공지사항 문서를 찾거나, 없으면 새로 생성 (활성화 상태는 false, 메시지는 빈값)
+    let announcement = await Announcement.findOne({ key: 'currentAnnouncement' });
+    if (!announcement) {
+      announcement = new Announcement({ key: 'currentAnnouncement', message: '', active: false });
+      await announcement.save();
+    }
+    res.status(200).json(announcement);
+  } catch (error) {
+    console.error('API 에러: 공지사항 조회 실패:', error);
+    res.status(500).json({ message: '공지사항 조회에 실패했습니다.', error: error.message });
+  }
+});
+
+// --- 새로운 API: 공지사항 업데이트 (PUT) ---
+app.put('/api/announcement', async (req, res) => {
+  const { message, active } = req.body;
+  try {
+    // 'currentAnnouncement' 키를 찾아 업데이트하거나, 없으면 새로 생성
+    const updatedAnnouncement = await Announcement.findOneAndUpdate(
+      { key: 'currentAnnouncement' },
+      { message, active, updatedAt: new Date() },
+      { new: true, upsert: true } // new: 업데이트된 문서 반환, upsert: 없으면 생성
+    );
+
+    // 공지사항 변경 후 모든 클라이언트에게 실시간 알림
+    io.emit('announcementUpdated', updatedAnnouncement);
+
+    res.status(200).json(updatedAnnouncement);
+  } catch (error) {
+    console.error('API 에러: 공지사항 업데이트 실패:', error);
+    res.status(500).json({ message: '공지사항 업데이트에 실패했습니다.', error: error.message });
+  }
+});
+
 
 // --- Socket.IO 연결 이벤트 핸들링 ---
 io.on('connection', (socket) => {
