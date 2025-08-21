@@ -17,14 +17,13 @@ const server = http.createServer(app);
 
 // --- 3. CORS (Cross-Origin Resource Sharing) 허용 출처 설정 ---
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (로컬 개발용)
-  'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
-  'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
-  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때
-
-  // ⭐ 여러분의 Netlify 프론트엔드 주소를 여기에 정확히 넣어주세요! ⭐
+  process.env.FRONTEND_URL,
+  'http://localhost:5500',   
+  'http://127.0.0.1:5500',   
+  'http://localhost:3000',   
+  'http://127.0.0.1:3000',   
+  null,                      
+  // 여러분의 Netlify 프론트엔드 주소로 정확히 교체!
   'https://heartfelt-cannoli-903df2.netlify.app', 
   // 필요시 추가적인 로컬 IP나 커스텀 도메인
 ];
@@ -48,7 +47,6 @@ const io = new Server(server, {
 // 5. 서버 포트와 MongoDB 연결 URI를 .env 파일에서 로드
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
-// *** 보안 강화: 관리자 비밀번호를 환경 변수에서 불러옵니다. ***
 const ADMIN_PASSWORD_SERVER = process.env.ADMIN_PASSWORD; 
 
 // 6. 미들웨어 설정
@@ -102,13 +100,13 @@ const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema);
 
 // --- API 엔드포인트 정의 ---
 
-// *** 보안 강화: 관리자 로그인 API ***
+// 관리자 로그인 API
 app.post('/api/admin-login', (req, res) => {
   const { password } = req.body;
-  if (!password) { // 비밀번호 필드 자체를 안 보냈을 경우
+  if (!password) { 
     return res.status(400).json({ success: false, message: '비밀번호를 입력해주세요.' });
   }
-  if (!ADMIN_PASSWORD_SERVER) { // 환경 변수가 서버에 설정 안 되어 있을 때
+  if (!ADMIN_PASSWORD_SERVER) { 
     console.error('❌ ADMIN_PASSWORD 환경 변수가 설정되지 않았습니다. Render Environment 변수를 확인하세요.');
     return res.status(500).json({ success: false, message: '서버 관리자 비밀번호가 설정되지 않았습니다.' });
   }
@@ -118,7 +116,6 @@ app.post('/api/admin-login', (req, res) => {
     res.status(401).json({ success: false, message: '비밀번호가 틀렸습니다.' });
   }
 });
-
 
 // 9-1. 모든 예약 정보 조회 API (GET 요청)
 app.get('/api/reservations', async (req, res) => {
@@ -132,9 +129,9 @@ app.get('/api/reservations', async (req, res) => {
 });
 
 // 9-2. 새로운 예약 생성 API (POST 요청) - Rate Limiting & 허니팟 검증 적용
-app.post('/api/reservations', limiter, async (req, res) => { // limiter 미들웨어 적용
+app.post('/api/reservations', limiter, async (req, res) => { 
   // --- 새로운 기능: 허니팟(Honeypot) 필드 검증 ---
-  if (req.body.honeypot_field) { // 프론트엔드의 숨겨진 필드에 값이 채워져 있으면 봇으로 간주
+  if (req.body.honeypot_field) { 
       console.warn('🍯 Honeypot field filled. Likely a bot:', req.ip);
       return res.status(400).json({ message: '비정상적인 요청이 감지되었습니다. (Honeypot)' });
   }
@@ -151,11 +148,10 @@ app.post('/api/reservations', limiter, async (req, res) => { // limiter 미들�
   if (!/^[가-힣]{2,4}$/.test(name)) {
       return res.status(400).json({ message: '이름은 한글 2~4자여야 합니다.' });
   }
-  const validDorms = ['꿈동', '미래동']; // 유효한 기숙사 목록
+  const validDorms = ['꿈동', '미래동']; 
   if (!validDorms.includes(dormitory)) {
       return res.status(400).json({ message: '유효하지 않은 기숙사입니다.' });
   }
-  // 유효한 층 확인은 프론트엔드에서 더 자세히 이루어지고 여기서는 타입만 확인
   if (typeof floor !== 'string' || typeof seat !== 'number') {
       return res.status(400).json({ message: '층 또는 좌석 번호가 올바르지 않습니다.' });
   }
@@ -172,24 +168,25 @@ app.post('/api/reservations', limiter, async (req, res) => { // limiter 미들�
       return res.status(403).json({ message: `현재는 예약 가능 시간이 아닙니다. (${startTime.toLocaleString()} ~ ${endTime.toLocaleString()})` });
   }
 
+  let newReservationInstance; // ✨ 변수를 try 블록 상단에 선언 ✨
+
   try {
     const existUser = await Reservation.findOne({ roomNo, name });
     if (existUser) {
       // 기존 예약이 있는 사용자가 새로운 좌석을 예약하려 할 때
-      // 이 경우, 일단 새 좌석 예약을 시도하고, 성공하면 이전 좌석 삭제 (원자적 작업에 준함)
-      const newReservation = new Reservation({ roomNo, name, dormitory, floor, seat });
-      await newReservation.save(); // 새 예약 먼저 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
+      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); // ✨ 변수에 값 할당 ✨
+      await newReservationInstance.save(); // 새 예약 먼저 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
       await Reservation.deleteOne({ _id: existUser._id }); // 이전 예약 삭제
     } else {
       // 기존 예약이 없는 새로운 사용자
-      const newReservation = new Reservation({ roomNo, name, dormitory, floor, seat });
-      await newReservation.save(); // 새 예약 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
+      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); // ✨ 변수에 값 할당 ✨
+      await newReservationInstance.save(); // 새 예약 저장 (unique 인덱스에 의해 중복 좌석이면 여기서 에러 발생)
     }
 
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
 
-    res.status(201).json({ message: '예약 성공!', newReservation }); // 응답 메시지 개선
+    res.status(201).json({ message: '예약 성공!', newReservation: newReservationInstance }); // ✨ 선언된 변수 사용 ✨
   } catch (error) {
     if (error.code === 11000) { // MongoDB duplicate key error (unique index 위반)
         if (error.message.includes('roomNo_1_name_1')) {
