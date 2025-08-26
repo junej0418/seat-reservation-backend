@@ -17,16 +17,15 @@ const server = http.createServer(app);
 
 // --- 3. CORS (Cross-Origin Resource Sharing) 허용 출처 설정 ---
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // .env 파일에서 불러온 프론트엔드 주소 (로컬 개발용)
-  'http://localhost:5500',   // VS Code Live Server의 일반적인 localhost 주소
-  'http://127.0.0.1:5500',   // VS Code Live Server의 일반적인 127.0.0.1 주소
-  'http://localhost:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
-  null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때
-
-  // ⭐ 여러분의 Netlify 프론트엔드 주소를 여기에 정확히 넣어주세요! ⭐
+  process.env.FRONTEND_URL, 
+  'http://localhost:5500',   
+  'http://127.0.0.1:5500',   
+  'http://localhost:3000',   
+  'http://127.0.0.1:3000',   
+  null,                      
+  // 여러분의 Netlify 프론트엔드 주소로 정확히 교체!
   'https://heartfelt-cannoli-903df2.netlify.app', 
-  // 추가적인 로컬 IP나 커스텀 도메인
+  // 필요시 추가적인 로컬 IP나 커스텀 도메인
 ];
 
 // 4. Socket.IO 서버 인스턴스 생성 및 CORS 설정
@@ -89,7 +88,9 @@ const reservationSchema = new mongoose.Schema({
   seat: { type: Number, required: true },
   createdAt: { type: Date, default: Date.now } 
 });
+// roomNo와 name 조합은 고유해야 함 (한 사람당 하나의 예약만 허용)
 reservationSchema.index({ roomNo: 1, name: 1 }, { unique: true });
+// dormitory, floor, seat 조합도 고유해야 함 (한 좌석은 하나의 예약만 허용)
 reservationSchema.index({ dormitory: 1, floor: 1, seat: 1 }, { unique: true });
 const Reservation = mongoose.model('Reservation', reservationSchema); 
 
@@ -102,10 +103,10 @@ const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema);
 
 // --- 새로운 스키마: 공지사항 관리 ---
 const announcementSchema = new mongoose.Schema({
-    key: { type: String, unique: true, default: 'currentAnnouncement' }, // 공지사항 문서가 하나만 존재하도록
-    message: { type: String, default: '' }, // 공지 메시지 내용
-    active: { type: Boolean, default: false }, // 공지 활성화/비활성화
-    updatedAt: { type: Date, default: Date.now } // 마지막 업데이트 시간
+    key: { type: String, unique: true, default: 'currentAnnouncement' }, 
+    message: { type: String, default: '' }, 
+    active: { type: Boolean, default: false }, 
+    updatedAt: { type: Date, default: Date.now } 
 });
 const Announcement = mongoose.model('Announcement', announcementSchema);
 
@@ -122,7 +123,6 @@ app.post('/api/admin-login', (req, res) => {
     return res.status(500).json({ success: false, message: '서버 관리자 비밀번호가 설정되지 않았습니다.' });
   }
   if (password === ADMIN_PASSWORD_SERVER) {
-    // ⭐ 새로운 기능: 관리자 로그인 성공 기록 ⭐
     console.log(`✅ 관리자 로그인 성공: ${new Date().toLocaleString()} (IP: ${req.ip})`);
     res.status(200).json({ success: true, message: '관리자 로그인 성공' });
   } else {
@@ -143,7 +143,8 @@ app.get('/api/reservations', async (req, res) => {
   }
 });
 
-// 9-2. 새로운 예약 생성 API (POST 요청) - Rate Limiting & 허니팟 검증 적용
+// 9-2. 새로운 예약 생성/업데이트 API (POST 요청) - Rate Limiting & 허니팟 검증 적용
+// ⭐⭐⭐ 자리 변경 기능의 핵심 로직 수정 ⭐⭐⭐
 app.post('/api/reservations', limiter, async (req, res) => { 
   // 허니팟(Honeypot) 필드 검증
   if (req.body.honeypot_field) { 
@@ -183,25 +184,53 @@ app.post('/api/reservations', limiter, async (req, res) => {
       return res.status(403).json({ message: `현재는 예약 가능 시간이 아닙니다. (${startTime.toLocaleString()} ~ ${endTime.toLocaleString()})` });
   }
 
-  let newReservationInstance; // ✨ 변수를 try 블록 상단에 선언 ✨
+  let resultReservation; 
 
   try {
-    const existUser = await Reservation.findOne({ roomNo, name });
-    if (existUser) {
-      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); 
-      await newReservationInstance.save(); 
-      await Reservation.deleteOne({ _id: existUser._id }); 
-    } else {
-      newReservationInstance = new Reservation({ roomNo, name, dormitory, floor, seat }); 
-      await newReservationInstance.save(); 
+    // 1. 기존 사용자가 예약한 자리인지 확인 (동일한 룸 번호, 이름으로 이미 예약된 좌석)
+    const existingReservationByCurrentUser = await Reservation.findOne({ roomNo, name });
+    
+    // 2. 선택한 좌석(dormitory, floor, seat)이 이미 다른 사람에게 예약되었는지 확인
+    // 현재 사용자 자신이 예약한 경우(자리 변경)는 제외하고 확인
+    const existingReservationAtNewSeat = await Reservation.findOne({ dormitory, floor, seat });
+
+    if (existingReservationAtNewSeat && // 새 자리에 다른 예약이 있고
+        (!existingReservationByCurrentUser || // 현재 유저가 예약이 없거나 (새로운 유저)
+         (existingReservationByCurrentUser._id.toString() !== existingReservationAtNewSeat._id.toString()))) // 새 자리 예약자가 현재 유저와 다르면
+    {
+        return res.status(409).json({ message: '선택한 좌석은 이미 예약되었습니다. 다른 좌석을 선택해주세요.' });
     }
 
+    if (existingReservationByCurrentUser) {
+      // 3. 기존 예약이 있는 경우: 기존 예약을 새 좌석 정보로 업데이트 (자리 변경)
+      resultReservation = await Reservation.findOneAndUpdate(
+        { _id: existingReservationByCurrentUser._id }, // 기존 예약의 고유 ID로 찾기
+        { // 업데이트할 내용
+          dormitory, floor, seat,
+          createdAt: new Date() // 예약 시간 업데이트 (최신으로 갱신)
+        },
+        { new: true, runValidators: true, upsert: true } // 업데이트된 문서 반환, 스키마 유효성 검사 실행, 없으면 생성 (이 경우는 항상 있음)
+      );
+      if (!resultReservation) {
+        throw new Error("예약 업데이트 실패: 문서를 찾을 수 없습니다.");
+      }
+
+    } else {
+      // 4. 기존 예약이 없는 경우: 새로운 예약 생성
+      resultReservation = new Reservation({ roomNo, name, dormitory, floor, seat });
+      await resultReservation.save(); // unique 인덱스에 의해 좌석이 이미 예약된 경우 여기서 에러 발생
+    }
+
+    // 데이터 변경 후 모든 연결된 클라이언트(프론트엔드)에 실시간 알림
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
 
-    res.status(201).json({ message: '예약 성공!', newReservation: newReservationInstance });
+    res.status(201).json({ message: '예약 성공!', newReservation: resultReservation }); 
+
   } catch (error) {
-    if (error.code === 11000) { 
+    if (error.code === 11000) { // MongoDB duplicate key error (unique index 위반)
+        // 이 에러는 거의 발생하지 않아야 함. 왜냐하면 findOneAndUpdate와 기존 좌석 체크로 상당부분 방지.
+        // 다만 예상치 못한 동시성 문제나 로직 흐름상의 극히 드문 경우를 대비.
         if (error.message.includes('roomNo_1_name_1')) {
             return res.status(409).json({ message: '이미 이 룸 번호와 이름으로 예약이 존재합니다.' });
         }
@@ -209,7 +238,7 @@ app.post('/api/reservations', limiter, async (req, res) => {
             return res.status(409).json({ message: '선택한 좌석은 이미 예약되었습니다. 다른 좌석을 선택해주세요.' });
         }
     }
-    console.error('API 에러: 예약 생성 실패:', error);
+    console.error('API 에러: 예약 생성/업데이트 실패:', error);
     res.status(500).json({ message: '예약 처리 중 알 수 없는 오류가 발생했습니다.', error: error.message });
   }
 });
@@ -249,7 +278,9 @@ app.delete('/api/reservations/:id', async (req, res) => {
   }
 });
 
-// 9-5. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준)
+// 9-5. 사용자 기존 예약 삭제 API (DELETE 요청 - 자리 변경용, 룸번호/이름 기준) 
+// 이 API는 프론트엔드에서 직접 호출하지 않고 내부적으로 업데이트 로직으로 처리됨.
+// 하지만 직접 호출할 가능성을 대비하여 유지.
 app.delete('/api/reservations/user/:roomNo/:name', async (req, res) => {
   try {
     const { roomNo, name } = req.params; 
@@ -324,7 +355,7 @@ app.put('/api/announcement', async (req, res) => {
     const updatedAnnouncement = await Announcement.findOneAndUpdate(
       { key: 'currentAnnouncement' },
       { message, active, updatedAt: new Date() },
-      { new: true, upsert: true } // new: 업데이트된 문서 반환, upsert: 없으면 생성
+      { new: true, upsert: true } 
     );
 
     // 공지사항 변경 후 모든 클라이언트에게 실시간 알림
