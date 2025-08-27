@@ -18,7 +18,7 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',   // 백엔드 자체도 origin으로 요청할 수 있음
   null,                      // HTML 파일을 로컬 시스템(file://)에서 직접 열 때
 
-  // 여러분의 Netlify 프론트엔드 주소를 여기에 정확히 넣어주세요!
+  // ⭐ 여러분의 Netlify 프론트엔드 주소를 여기에 정확히 넣어주세요! ⭐
   'https://heartfelt-cannoli-903df2.netlify.app',
 ];
 
@@ -151,10 +151,15 @@ app.post('/api/reservations', limiter, async (req,res)=>{
 
     res.json({message:'예약 성공', newReservation: reservation});
   } catch(e){
-    if(e.code === 11000){
-      return res.status(409).json({message:'중복된 예약이 있습니다.'});
-    }
     console.error("예약 처리 중 오류:", e);
+    if(e.code === 11000){ // MongoDB duplicate key error
+      if(e.message.includes('roomNo_1_name_1')) {
+        return res.status(409).json({message:'이미 같은 룸번호와 이름으로 예약이 존재합니다.'});
+      }
+      if(e.message.includes('dormitory_1_floor_1_seat_1')) {
+        return res.status(409).json({message:'선택한 좌석은 이미 예약되었습니다.'});
+      }
+    }
     res.status(500).json({message:'서버 오류'});
   }
 });
@@ -186,7 +191,7 @@ app.delete('/api/reservations/:id', async (req,res)=>{
   }
 });
 
-// 관리자 예약시간 조회/설정
+// 관리자 예약시간 조회
 app.get('/api/admin-settings', async (req,res)=>{
   try{
     let settings = await AdminSetting.findOne({key:'reservationTimes'});
@@ -201,6 +206,7 @@ app.get('/api/admin-settings', async (req,res)=>{
   }
 });
 
+// 관리자 예약시간 설정
 app.put('/api/admin-settings', async (req,res)=>{
   try{
     const {reservationStartTime, reservationEndTime} = req.body;
@@ -213,7 +219,7 @@ app.put('/api/admin-settings', async (req,res)=>{
   }
 });
 
-// 공지사항 조회/설정
+// 공지사항 조회
 app.get('/api/announcement', async (req,res)=>{
   try{
     let announcement = await Announcement.findOne({key:'currentAnnouncement'});
@@ -228,6 +234,7 @@ app.get('/api/announcement', async (req,res)=>{
   }
 });
 
+// 공지사항 저장 및 갱신
 app.put('/api/announcement', async (req,res)=>{
   try{
     const {message, active} = req.body;
@@ -243,7 +250,7 @@ app.put('/api/announcement', async (req,res)=>{
 io.on('connection', socket => {
   console.log(`클라이언트 접속: ${socket.id}`);
   socket.on('disconnect', () => {
-    console.log(`클라이언트 연결 해제: ${socket.id}`);
+    console.log(`클라이언트 연결 종료: ${socket.id}`);
   });
 });
 
