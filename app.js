@@ -152,13 +152,8 @@ app.post('/api/reservations', limiter, async (req,res)=>{
     res.json({message:'예약 성공', newReservation: reservation});
   } catch(e){
     console.error("예약 처리 중 오류:", e);
-    if(e.code === 11000){ // MongoDB duplicate key error
-      if(e.message.includes('roomNo_1_name_1')) {
-        return res.status(409).json({message:'이미 같은 룸번호와 이름으로 예약이 존재합니다.'});
-      }
-      if(e.message.includes('dormitory_1_floor_1_seat_1')) {
-        return res.status(409).json({message:'선택한 좌석은 이미 예약되었습니다.'});
-      }
+    if(e.code === 11000){
+      return res.status(409).json({message:'중복된 예약이 있습니다.'});
     }
     res.status(500).json({message:'서버 오류'});
   }
@@ -191,7 +186,7 @@ app.delete('/api/reservations/:id', async (req,res)=>{
   }
 });
 
-// 관리자 예약시간 조회
+// 관리자 예약시간 조회/설정
 app.get('/api/admin-settings', async (req,res)=>{
   try{
     let settings = await AdminSetting.findOne({key:'reservationTimes'});
@@ -206,7 +201,6 @@ app.get('/api/admin-settings', async (req,res)=>{
   }
 });
 
-// 관리자 예약시간 설정
 app.put('/api/admin-settings', async (req,res)=>{
   try{
     const {reservationStartTime, reservationEndTime} = req.body;
@@ -219,7 +213,7 @@ app.put('/api/admin-settings', async (req,res)=>{
   }
 });
 
-// 공지사항 조회
+// 공지사항 조회/설정
 app.get('/api/announcement', async (req,res)=>{
   try{
     let announcement = await Announcement.findOne({key:'currentAnnouncement'});
@@ -234,7 +228,6 @@ app.get('/api/announcement', async (req,res)=>{
   }
 });
 
-// 공지사항 저장 및 갱신
 app.put('/api/announcement', async (req,res)=>{
   try{
     const {message, active} = req.body;
