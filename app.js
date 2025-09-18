@@ -55,8 +55,10 @@ const limiter = rateLimit({
   message: '너무 많은 요청입니다. 잠시 후 시도해주세요.',
   standardHeaders: true,
   legacyHeaders: false,
-  skip: req => req.path === '/api/reservations/all'
+  // ⭐ 수정: 모든 예약 삭제 엔드포인트도 rate limit에서 제외 ⭐
+  skip: req => req.path === '/api/reservations/all' || req.path === '/api/admin-settings' || req.path === '/api/announcement'
 });
+app.use(limiter); // ⭐ 추가: rate limiter 미들웨어 적용 ⭐
 
 mongoose.connect(MONGO_URI)
   .then(()=>console.log('MongoDB 연결 성공'))
@@ -88,6 +90,16 @@ const announcementSchema = new mongoose.Schema({
   updatedAt: {type:Date, default:Date.now}
 });
 const Announcement = mongoose.model('Announcement', announcementSchema);
+
+// ⭐ 추가: 관리자 권한 확인 미들웨어 ⭐
+const authenticateAdmin = (req, res, next) => {
+  const { adminPassword } = req.body; // 요청 본문에서 관리자 비밀번호를 받음
+  if (!ADMIN_PASSWORD || adminPassword !== ADMIN_PASSWORD) { // ADMIN_PASSWORD는 실제 관리자 비밀번호 변수
+    return res.status(403).json({ success: false, message: '관리자 권한이 없습니다.' });
+  }
+  next();
+};
+
 
 // 관리자 로그인 API
 app.post('/api/admin-login', (req,res)=>{
@@ -136,7 +148,7 @@ app.post('/api/reservations', limiter, async (req,res)=>{
 
     if(conflictSeat && (!existingUser || existingUser._id.toString() !== conflictSeat._id.toString()))
       return res.status(409).json({message:'선택한 좌석은 이미 예약되었습니다.'});
-    
+
     let reservation;
     if(existingUser){
       // 여기서 existingUser의 _id를 통해 업데이트. createdAt 필드는 일반적으로 업데이트하지 않음
@@ -166,7 +178,8 @@ app.put('/api/reservations/update/:id', limiter, async (req, res) => {
   if (req.body.honeypot_field) return res.status(400).json({ message: '비정상적 요청' });
 
   const { id } = req.params; // 업데이트할 예약의 _id
-  const { roomNo, name, dormitory, floor, seat } = req.body; // 새로운 예약 정보
+  // ⭐ 수정: 요청 본문에 사용자 식별 정보 추가 ⭐
+  const { roomNo, name, dormitory, floor, seat, requestingUserRoomNo, requestingUserName, requestingUserDormitory } = req.body; // 새로운 예약 정보
 
   if (!roomNo || !name || !dormitory || !floor || seat == null) {
     return res.status(400).json({ message: '모든 정보를 입력하세요.' });
@@ -187,6 +200,14 @@ app.put('/api/reservations/update/:id', limiter, async (req, res) => {
     const existingReservation = await Reservation.findById(id);
     if (!existingReservation) {
       return res.status(404).json({ message: '해당 예약을 찾을 수 없습니다.' });
+    }
+
+    // ⭐ 추가: 예약 변경 요청자 검증 (본인의 예약만 변경 가능) ⭐
+    // 단, 이 라우트는 관리자용 라우트가 아니므로 프론트엔드에서 현재 로그인된 사용자 정보를 함께 보낸다고 가정
+    if (existingReservation.roomNo !== requestingUserRoomNo ||
+        existingReservation.name !== requestingUserName ||
+        existingReservation.dormitory !== requestingUserDormitory) {
+        return res.status(403).json({ message: '본인의 예약만 변경할 수 있습니다.' });
     }
 
     // 2. 변경하려는 새 좌석이 다른 사람에게 이미 예약되어 있는지 확인합니다.
@@ -225,8 +246,8 @@ app.put('/api/reservations/update/:id', limiter, async (req, res) => {
 // ⭐⭐⭐ 예약 변경 (PUT) 라우트 추가 끝 ⭐⭐⭐
 
 
-// 전체 예약 삭제
-app.delete('/api/reservations/all', async (req,res)=>{
+// ⭐ 수정: 모든 예약 삭제 API에 관리자 인증 미들웨어 적용 ⭐
+app.delete('/api/reservations/all', authenticateAdmin, async (req,res)=>{
   try{
     await Reservation.deleteMany({});
     const allReservations = await Reservation.find({});
@@ -238,11 +259,39 @@ app.delete('/api/reservations/all', async (req,res)=>{
   }
 });
 
-// 개별 예약 삭제
+// ⭐ 수정: 개별 예약 삭제 API - 요청자 검증 로직 추가 ⭐
 app.delete('/api/reservations/:id', async (req,res)=>{
+  const { id } = req.params;
+  const { requestingUserRoomNo, requestingUserName, requestingUserDormitory, isAdmin } = req.body; // ⭐ 추가: 요청 본문에서 사용자 식별 정보와 관리자 여부를 받음 ⭐
+
   try{
-    const del = await Reservation.findByIdAndDelete(req.params.id);
-    if(!del) return res.status(404).json({message:'예약 없음'});
+    const reservationToCancel = await Reservation.findById(id);
+
+    if(!reservationToCancel) {
+        return res.status(404).json({message:'취소할 예약을 찾을 수 없습니다.'});
+    }
+
+    // ⭐ 예약 소유자 또는 관리자만 취소 가능 ⭐
+    if (isAdmin) { // 관리자 요청인 경우
+      // 관리자 비밀번호가 일치하는지 한번 더 확인 (클라이언트에서 오는 isAdmin 플래그는 믿을 수 없음)
+      const { adminPassword } = req.body; // 관리자 비밀번호를 직접 요청 본문에서 받음
+      if (!ADMIN_PASSWORD || adminPassword !== ADMIN_PASSWORD) {
+        return res.status(403).json({ success: false, message: '관리자 비밀번호가 일치하지 않아 취소할 수 없습니다.' });
+      }
+    } else { // 일반 사용자 요청인 경우
+      if (!requestingUserRoomNo || !requestingUserName || !requestingUserDormitory) {
+          return res.status(400).json({ message: '예약 취소를 위한 사용자 정보가 부족합니다.' });
+      }
+      if (reservationToCancel.roomNo !== requestingUserRoomNo ||
+          reservationToCancel.name !== requestingUserName ||
+          reservationToCancel.dormitory !== requestingUserDormitory) {
+          return res.status(403).json({ message: '본인의 예약만 취소할 수 있습니다.' });
+      }
+    }
+
+    const del = await Reservation.findByIdAndDelete(id);
+    if(!del) return res.status(404).json({message:'예약 없음'}); // 이미 삭제되었거나 다시 찾지 못한 경우
+
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
     res.json({message:'예약 취소 완료'});
@@ -253,7 +302,8 @@ app.delete('/api/reservations/:id', async (req,res)=>{
 });
 
 // 관리자 예약시간 조회/설정
-app.get('/api/admin-settings', async (req,res)=>{
+// ⭐ 수정: 관리자 설정 API에 관리자 인증 미들웨어 적용 ⭐
+app.get('/api/admin-settings', authenticateAdmin, async (req,res)=>{
   try{
     let settings = await AdminSetting.findOne({key:'reservationTimes'});
     if(!settings){
@@ -267,7 +317,7 @@ app.get('/api/admin-settings', async (req,res)=>{
   }
 });
 
-app.put('/api/admin-settings', async (req,res)=>{
+app.put('/api/admin-settings', authenticateAdmin, async (req,res)=>{
   try{
     const {reservationStartTime, reservationEndTime} = req.body;
     const settings = await AdminSetting.findOneAndUpdate({key:'reservationTimes'}, {reservationStartTime, reservationEndTime}, {new:true, upsert:true});
@@ -279,8 +329,8 @@ app.put('/api/admin-settings', async (req,res)=>{
   }
 });
 
-// 공지사항 조회/설정
-app.get('/api/announcement', async (req,res)=>{
+// ⭐ 수정: 공지사항 API에 관리자 인증 미들웨어 적용 ⭐
+app.get('/api/announcement', authenticateAdmin, async (req,res)=>{
   try{
     let announcement = await Announcement.findOne({key:'currentAnnouncement'});
     if(!announcement){
@@ -294,7 +344,7 @@ app.get('/api/announcement', async (req,res)=>{
   }
 });
 
-app.put('/api/announcement', async (req,res)=>{
+app.put('/api/announcement', authenticateAdmin, async (req,res)=>{
   try{
     const {message, active} = req.body;
     const updated = await Announcement.findOneAndUpdate({key:'currentAnnouncement'}, {message, active, updatedAt:new Date()}, {new:true, upsert:true});
@@ -306,13 +356,9 @@ app.put('/api/announcement', async (req,res)=>{
   }
 });
 
+
 io.on('connection', socket => {
   console.log(`클라이언트 접속: ${socket.id}`);
-  // 클라이언트 연결 시 현재 예약 정보, 관리자 설정, 공지사항을 즉시 전송
-  // 이는 `emitReservationsUpdate`, `emitAdminSettingsUpdate`, `emitAnnouncementUpdate` 함수가 전역으로 선언되어 있고,
-  // findOne()을 통해 데이터를 가져와야 하므로, 이 부분에서 호출하거나,
-  // 각 API 호출 완료 후 io.emit()이 잘 동작하고 있는지 확인하는 것이 더 중요합니다.
-  // 이 부분은 기존 코드를 최대한 유지합니다.
   socket.on('disconnect', () => {
     console.log(`클라이언트 연결 종료: ${socket.id}`);
   });
