@@ -1,3 +1,4 @@
+// app.js
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -22,8 +23,8 @@ const allowedOrigins = [
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-      if(!origin) return callback(null,true);
-      if(!allowedOrigins.includes(origin)) return callback(new Error("CORS 차단됨"), false);
+      if (!origin) return callback(null,true);
+      if (!allowedOrigins.includes(origin)) return callback(new Error('CORS 차단'), false);
       return callback(null,true);
     },
     methods: ['GET','POST','PUT','DELETE'],
@@ -38,239 +39,251 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 app.use(cors({
   origin: (origin, callback) => {
     if(!origin) return callback(null,true);
-    if(!allowedOrigins.includes(origin)) return callback(new Error("CORS 차단됨"), false);
+    if(!allowedOrigins.includes(origin)) return callback(new Error('CORS 차단'), false);
     callback(null,true);
   },
-  credentials:true
+  credentials: true,
 }));
 
 app.use(express.json());
 
 const limiter = rateLimit({
-  windowMs:60000,
-  max:20,
-  message:'너무 많은 요청입니다. 잠시 후 다시 시도해주세요.',
-  standardHeaders:true,
-  legacyHeaders:false,
+  windowMs: 60000,
+  max: 20,
+  message: '너무 많은 요청입니다. 잠시 후 다시 시도해주세요.',
+  standardHeaders: true,
+  legacyHeaders: false,
   skip: req => req.path === '/api/reservations/all' || req.path.startsWith('/api/admin-settings') || req.path.startsWith('/api/announcement'),
 });
 app.use(limiter);
 
 mongoose.connect(MONGO_URI)
-.then(()=>console.log('MongoDB 연결 성공'))
-.catch(err=>console.error('MongoDB 연결 실패:', err));
+  .then(() => console.log('MongoDB 연결 성공'))
+  .catch(err => console.error('MongoDB 연결 실패:', err));
 
+// 스키마 변경: deviceIdentifier 제거, password 필드 추가
 const reservationSchema = new mongoose.Schema({
-  roomNo: {type:String, required:true},
-  name: {type:String, required:true},
-  dormitory: {type:String, required:true},
-  floor: {type:String, required:true},
-  seat: {type:Number, required:true},
-  createdAt: {type:Date, default:Date.now},
-  password: {type:String, required:true}
+  roomNo: { type: String, required: true },
+  name: { type: String, required: true },
+  dormitory: { type: String, required: true },
+  floor: { type: String, required: true },
+  seat: { type: Number, required: true },
+  createdAt: { type: Date, default: Date.now },
+  password: { type: String, required: true }  // 예약 시 입력한 비밀번호
 });
-reservationSchema.index({roomNo:1,name:1},{unique:true});
-reservationSchema.index({dormitory:1,floor:1,seat:1},{unique:true});
+reservationSchema.index({ roomNo:1, name:1 }, { unique: true });
+reservationSchema.index({ dormitory:1, floor:1, seat:1 }, { unique: true });
 const Reservation = mongoose.model('Reservation', reservationSchema);
 
 const adminSettingSchema = new mongoose.Schema({
-  key: {type:String,unique:true,required:true},
-  reservationStartTime: {type:Date,default:null},
-  reservationEndTime: {type:Date,default:null}
+  key: {type: String, unique: true, required: true},
+  reservationStartTime: {type: Date, default: null},
+  reservationEndTime: {type: Date, default: null}
 });
 const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema);
 
 const announcementSchema = new mongoose.Schema({
-  key: {type:String,unique:true,default:'currentAnnouncement'},
-  message: {type:String,default:''},
-  active: {type:Boolean,default:false},
-  updatedAt: {type:Date,default:Date.now}
+  key: {type: String, unique: true, default:'currentAnnouncement'},
+  message: {type: String, default:''},
+  active: {type: Boolean, default: false},
+  updatedAt: {type: Date, default: Date.now}
 });
 const Announcement = mongoose.model('Announcement', announcementSchema);
 
-const authenticateAdmin = (req,res,next) => {
+const authenticateAdmin = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if(!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({success:false,message:'인증 헤더가 필요합니다.'});
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({success:false, message:'인증 헤더가 필요합니다.'});
+  }
   const adminPassword = authHeader.split(' ')[1];
-  if(!ADMIN_PASSWORD) return res.status(500).json({success:false,message:'서버 관리자 비밀번호 미설정'});
-  if(adminPassword !== ADMIN_PASSWORD) return res.status(403).json({success:false,message:'관리자 권한이 없습니다.'});
+  if(!ADMIN_PASSWORD) {
+    return res.status(500).json({success:false, message:'서버 관리자 비밀번호 미설정'});
+  }
+  if(adminPassword !== ADMIN_PASSWORD) {
+    return res.status(403).json({success:false, message:'관리자 권한이 없습니다.'});
+  }
   next();
 };
 
-app.post('/api/admin-login', (req,res) => {
+app.post('/api/admin-login', (req, res) => {
   const { password } = req.body;
-  if(!password) return res.status(400).json({success:false,message:'비밀번호를 입력하세요.'});
-  if(!ADMIN_PASSWORD) return res.status(500).json({success:false,message:'서버 관리자 비밀번호 미설정'});
-  if(password === ADMIN_PASSWORD) {
-    console.log(`관리자 로그인 성공 IP:${req.ip}`);
-    return res.json({success:true,message:'관리자 로그인 성공'});
+  if (!password) return res.status(400).json({success:false, message:'비밀번호를 입력하세요.'});
+  if (!ADMIN_PASSWORD) return res.status(500).json({success:false, message:'서버 관리자 비밀번호 미설정'});
+  if (password === ADMIN_PASSWORD) {
+    console.log(`관리자 로그인 성공 IP: ${req.ip}`);
+    res.json({success:true, message:'관리자 로그인 성공'});
   } else {
-    console.log(`관리자 로그인 실패 IP:${req.ip}`);
-    return res.status(401).json({success:false,message:'비밀번호가 틀렸습니다.'});
+    console.log(`관리자 로그인 실패 IP: ${req.ip}`);
+    res.status(401).json({success:false, message:'비밀번호가 틀렸습니다.'});
   }
 });
 
-app.get('/api/admin-settings', authenticateAdmin, async (req,res) => {
+app.get('/api/admin-settings', authenticateAdmin, async (req, res) => {
   try {
-    let settings = await AdminSetting.findOne({key:'reservationTimes'});
-    if(!settings){
-      settings = new AdminSetting({key:'reservationTimes'});
+    let settings = await AdminSetting.findOne({ key: 'reservationTimes' });
+    if (!settings) {
+      settings = new AdminSetting({ key: 'reservationTimes' });
       await settings.save();
     }
     res.json(settings);
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
-app.put('/api/admin-settings', authenticateAdmin, async (req,res) => {
+app.put('/api/admin-settings', authenticateAdmin, async (req, res) => {
   try {
     const { reservationStartTime, reservationEndTime } = req.body;
-    const settings = await AdminSetting.findOneAndUpdate({key:'reservationTimes'}, {reservationStartTime, reservationEndTime}, {new:true,upsert:true,runValidators:true});
+    const settings = await AdminSetting.findOneAndUpdate(
+      { key: 'reservationTimes' },
+      { reservationStartTime, reservationEndTime },
+      { new: true, upsert: true, runValidators: true }
+    );
     io.emit('settingsUpdated', settings);
     res.json(settings);
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
-app.get('/api/announcement', authenticateAdmin, async (req,res) => {
+app.get('/api/announcement', authenticateAdmin, async (req, res) => {
   try {
-    let announcement = await Announcement.findOne({key:'currentAnnouncement'});
-    if(!announcement){
-      announcement = new Announcement({key:'currentAnnouncement',message:"",active:false});
+    let announcement = await Announcement.findOne({ key: 'currentAnnouncement' });
+    if (!announcement) {
+      announcement = new Announcement({ key: 'currentAnnouncement', message: '', active: false });
       await announcement.save();
     }
     res.json(announcement);
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
-app.put('/api/announcement', authenticateAdmin, async (req,res) => {
+app.put('/api/announcement', authenticateAdmin, async (req, res) => {
   try {
     const { message, active } = req.body;
-    const updated = await Announcement.findOneAndUpdate({key:'currentAnnouncement'}, {message, active, updatedAt: new Date()}, {new:true,upsert:true});
+    const updated = await Announcement.findOneAndUpdate({ key: 'currentAnnouncement' }, { message, active, updatedAt: new Date() }, { new: true, upsert: true });
     io.emit('announcementUpdated', updated);
     res.json(updated);
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
-app.get('/api/reservations', async (req,res) => {
+app.get('/api/reservations', async (req, res) => {
   try {
     const reservations = await Reservation.find({});
     res.json(reservations);
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
-app.post('/api/reservations', async (req,res) => {
-  if(req.body.honeypot_field) return res.status(400).json({message:'비정상적 요청'});
+// 예약 생성
+app.post('/api/reservations', async (req, res) => {
+  if (req.body.honeypot_field) return res.status(400).json({ message: '비정상적 요청' });
 
   const { roomNo, name, dormitory, floor, seat, password } = req.body;
-  if(!roomNo || !name || !dormitory || !floor || seat == null || !password)
-    return res.status(400).json({message:'모든 정보를 입력하세요.'});
-
-  const adminSettings = await AdminSetting.findOne({key:'reservationTimes'});
-  if(!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime)
-    return res.status(403).json({message:'예약 가능 시간이 설정되지 않았습니다.'});
-
+  if (!roomNo || !name || !dormitory || !floor || seat == null || !password) {
+    return res.status(400).json({ message: '모든 정보를 정확히 입력해주세요.' });
+  }
+  const adminSettings = await AdminSetting.findOne({ key: 'reservationTimes' });
+  if (!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime) {
+    return res.status(403).json({ message: '예약 가능 시간이 설정되지 않았습니다.' });
+  }
   const now = new Date();
-  if(now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime)
-    return res.status(403).json({message:'현재 예약 가능 시간이 아닙니다.'});
-
+  if (now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime) {
+    return res.status(403).json({ message: '현재 예약 가능 시간이 아닙니다.' });
+  }
   try {
-    const conflictSeat = await Reservation.findOne({ dormitory, floor, seat });
+    const seatConflict = await Reservation.findOne({ dormitory, floor, seat });
     const existingUser = await Reservation.findOne({ roomNo, name });
-    if(conflictSeat && (!existingUser || existingUser._id.toString() !== conflictSeat._id.toString()))
-      return res.status(409).json({ message:"선택한 좌석은 이미 예약되었습니다." });
-
-    let reservation;
-    if(existingUser){
-      reservation = await Reservation.findByIdAndUpdate(existingUser._id, {dormitory, floor, seat, password, createdAt: new Date()}, {new:true});
-    } else {
-      reservation = new Reservation({ roomNo, name, dormitory, floor, seat, password });
-      await reservation.save();
+    if (seatConflict && (!existingUser || existingUser._id.toString() !== seatConflict._id.toString())) {
+      return res.status(409).json({ message: '선택 좌석이 이미 예약되었습니다.' });
     }
-    const allReservations = await Reservation.find({});
-    io.emit('reservationsUpdated', allReservations);
-    res.json({message:'예약 성공', newReservation: reservation});
+    if (existingUser) {
+      const updatedReservation = await Reservation.findByIdAndUpdate(existingUser._id, { dormitory, floor, seat, password, createdAt: new Date() }, { new: true });
+      io.emit('reservationsUpdated', await Reservation.find({}));
+      return res.json({ message: '예약 변경 성공', reservation: updatedReservation });
+    } else {
+      const newReservation = new Reservation({ roomNo, name, dormitory, floor, seat, password });
+      await newReservation.save();
+      io.emit('reservationsUpdated', await Reservation.find({}));
+      return res.json({ message: '예약 성공', reservation: newReservation });
+    }
   } catch(e) {
     console.error(e);
-    if(e.code === 11000) return res.status(409).json({message:'중복된 예약이 있습니다.'});
-    res.status(500).json({message:'서버 오류'});
+    if (e.code === 11000) return res.status(409).json({ message: '중복된 예약 정보입니다.' });
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
+// 예약 변경
 app.put('/api/reservations/update/:id', async (req, res) => {
-  if(req.body.honeypot_field) return res.status(400).json({message:'비정상적 요청'});
-  const id = req.params.id;
+  if (req.body.honeypot_field) return res.status(400).json({ message: '비정상적 요청' });
+  const { id } = req.params;
   const { roomNo, name, dormitory, floor, seat, password } = req.body;
-  if(!roomNo || !name || !dormitory || !floor || seat == null || !password)
-    return res.status(400).json({message:'모든 정보를 입력하세요.'});
-
-  const adminSettings = await AdminSetting.findOne({key:'reservationTimes'});
-  if(!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime)
-    return res.status(403).json({message:'예약 가능 시간이 설정되지 않았습니다.'});
-
+  if (!roomNo || !name || !dormitory || !floor || seat == null || !password) {
+    return res.status(400).json({ message: '모든 정보를 입력해주세요.' });
+  }
+  const adminSettings = await AdminSetting.findOne({ key: 'reservationTimes' });
+  if (!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime) {
+    return res.status(403).json({ message: '예약 가능 시간이 설정되지 않았습니다.' });
+  }
   const now = new Date();
-  if(now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime)
-    return res.status(403).json({message:'현재 예약 가능 시간이 아닙니다.'});
-
+  if (now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime) {
+    return res.status(403).json({ message: '현재 예약 가능 시간이 아닙니다.' });
+  }
   try {
     const reservation = await Reservation.findById(id);
-    if(!reservation) return res.status(404).json({message:'예약을 찾을 수 없습니다.'});
-    if(reservation.password !== password) return res.status(403).json({message:'비밀번호가 틀렸습니다.'});
-
-    const conflictSeat = await Reservation.findOne({ dormitory, floor, seat, _id: { $ne: id } });
-    if(conflictSeat) return res.status(409).json({message:'좌석이 이미 예약되었습니다.'});
-
-    const updatedReservation = await Reservation.findByIdAndUpdate(id, {roomNo,name,dormitory,floor,seat,password,createdAt: new Date()}, {new:true});
-    const allReservations = await Reservation.find({});
-    io.emit('reservationsUpdated', allReservations);
-    res.json({message:'예약 변경 성공', updatedReservation});
+    if (!reservation) return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
+    if (reservation.password !== password) {
+      return res.status(403).json({ message: '비밀번호가 일치하지 않습니다.' });
+    }
+    const seatConflict = await Reservation.findOne({ dormitory, floor, seat, _id: { $ne: id } });
+    if (seatConflict) return res.status(409).json({ message: '선택 좌석이 이미 예약되었습니다.' });
+    const updatedReservation = await Reservation.findByIdAndUpdate(id, { roomNo, name, dormitory, floor, seat, password, createdAt: new Date() }, { new: true });
+    io.emit('reservationsUpdated', await Reservation.find({}));
+    return res.json({ message: '예약 변경 성공', reservation: updatedReservation });
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
+// 예약 취소
 app.delete('/api/reservations/:id', async (req, res) => {
-  const id = req.params.id;
+  const { id } = req.params;
   const { password, isAdmin, adminPassword } = req.body;
   try {
     const reservation = await Reservation.findById(id);
-    if(!reservation) return res.status(404).json({message:'예약을 찾을 수 없습니다.'});
-    if(isAdmin){
-      if(!ADMIN_PASSWORD || adminPassword !== ADMIN_PASSWORD) return res.status(403).json({message:'관리자 비밀번호 오류'});
+    if (!reservation) return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
+    if (isAdmin) {
+      if (!ADMIN_PASSWORD || adminPassword !== ADMIN_PASSWORD) return res.status(403).json({ message: '관리자 비밀번호가 틀렸습니다.' });
     } else {
-      if(reservation.password !== password) return res.status(403).json({message:'비밀번호가 틀렸습니다.'});
+      if (reservation.password !== password) return res.status(403).json({ message: '비밀번호가 틀렸습니다.' });
     }
     await Reservation.findByIdAndDelete(id);
-    const allReservations = await Reservation.find({});
-    io.emit('reservationsUpdated', allReservations);
-    res.json({message:'예약 취소 완료'});
+    io.emit('reservationsUpdated', await Reservation.find({}));
+    res.json({ message: '예약 취소 완료' });
   } catch(e) {
     console.error(e);
-    res.status(500).json({message:'서버 오류'});
+    res.status(500).json({ message: '서버 오류' });
   }
 });
 
 io.on('connection', socket => {
-  console.log(`클라이언트 연결: ${socket.id}`);
+  console.log(`Client connected: ${socket.id}`);
   socket.on('disconnect', () => {
-    console.log(`클라이언트 연결 종료: ${socket.id}`);
+    console.log(`Client disconnected: ${socket.id}`);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`서버 시작 http://localhost:${PORT}`);
+  console.log(`Server running http://localhost:${PORT}`);
 });
