@@ -4,7 +4,7 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 const rateLimit = require('express-rate-limit');
-const bcrypt = require('bcrypt'); // bcrypt 라이브러리 추가
+const bcrypt = require('bcryptjs'); // bcrypt 라이브러리 추가
 require('dotenv').config();
 
 const app = express();
