@@ -47,6 +47,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Render 등 프록시 환경에서 클라이언트 IP를 정확히 식별하기 위한 설정
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 오류를 해결합니다.
+app.set('trust proxy', 1);
+
 const limiter = rateLimit({
   windowMs: 60000, // 1분
   max: 20, // 1분당 최대 20회 요청 허용
@@ -58,9 +62,9 @@ const limiter = rateLimit({
 
 // MongoDB 연결
 mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true, // MongoDB 드라이버 4.0 이상에서는 더 이상 필요하지 않지만, 하위 버전 호환성 고려하여 유지
-  useUnifiedTopology: true, // MongoDB 드라이버 4.0 이상에서는 더 이상 필요하지 않지만, 하위 버전 호환성 고려하여 유지
-  serverSelectionTimeoutMS: 15000, // 서버 선택 시간 초과를 15초로 설정하여 연결 안정성 강화
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 15000,
 })
   .then(() => console.log('MongoDB 연결 성공'))
   .catch(err => console.error('MongoDB 연결 실패:', err));
@@ -118,6 +122,63 @@ const adminOnlyAnnouncementSchema = new mongoose.Schema({
 });
 const AdminOnlyAnnouncement = mongoose.model('AdminOnlyAnnouncement', adminOnlyAnnouncementSchema);
 
+// 약한 비밀번호 검증 헬퍼 함수
+const isWeakPassword = (password) => {
+  const passwordLower = password.toLowerCase();
+  const passwordLength = password.length;
+
+  // 1. 단순한 약한 패턴들 (Regex 사용)
+  const simpleWeakPatterns = [
+      /^(.)\1{3,}$/,       // 4자리 이상 동일한 문자/숫자 반복 (예: 1111, aaaa, ####)
+      // 키보드 상의 연속 패턴들 (4자리 이상부터)
+      /^abcd(e?f?g?h?i?j?k?l?m?n?o?p?q?r?s?t?u?v?w?x?y?z?)?$/, // 알파벳 순차 (abcd...)
+      /^qwer(t?y?u?i?o?p?)?$/,                               // QWERTY 키보드 상위열 (qwer...)
+      /^asdf(g?h?j?k?l?)?$/,                               // QWERTY 키보드 중간열 (asdf...)
+      /^zxcv(b?n?m?)?$/,                                   // QWERTY 키보드 하위열 (zxcv...)
+  ];
+
+  if (simpleWeakPatterns.some(pattern => pattern.test(passwordLower))) {
+      return true;
+  }
+
+  // 2. 루프 기반의 순차/역순차 검사 (숫자 및 알파벳) - 4자리 이상 연속될 경우
+  if (passwordLength >= 4) {
+      for (let i = 0; i <= passwordLength - 4; i++) {
+          const sub = passwordLower.substring(i, i + 4); // 4자리씩 슬라이딩 윈도우
+
+          // 순차/역순차 숫자 검사
+          if (/^\d{4}$/.test(sub)) { // 4자리가 모두 숫자인지 확인
+              const d0 = parseInt(sub[0], 10);
+              const d1 = parseInt(sub[1], 10);
+              const d2 = parseInt(sub[2], 10);
+              const d3 = parseInt(sub[3], 10);
+
+              // 순차적 (예: 1234, 5678, 6789) 또는 역순차적 (예: 4321, 9876)
+              if ((d1 === d0 + 1 && d2 === d1 + 1 && d3 === d2 + 1) ||
+                  (d1 === d0 - 1 && d2 === d1 - 1 && d3 === d2 - 1)) {
+                  return true;
+              }
+          }
+
+          // 순차/역순차 알파벳 검사
+          if (/^[a-z]{4}$/.test(sub)) { // 4자리가 모두 알파벳인지 확인
+              const c0 = sub.charCodeAt(0);
+              const c1 = sub.charCodeAt(1);
+              const c2 = sub.charCodeAt(2);
+              const c3 = sub.charCodeAt(3);
+
+              // 순차적 (예: abcd, efgh) 또는 역순차적 (예: dcba, hgfe)
+              if ((c1 === c0 + 1 && c2 === c1 + 1 && c3 === c2 + 1) ||
+                  (c1 === c0 - 1 && c2 === c1 - 1 && c3 === c2 - 1)) {
+                  return true;
+              }
+          }
+      }
+  }
+
+  return false; // 위 패턴에 해당하지 않으면 안전하다고 판단
+};
+
 
 // --- API 라우터 정의 ---
 
@@ -157,16 +218,6 @@ app.get('/api/reservations', async (req, res) => {
     res.status(500).json({ message: '서버 오류' });
   }
 });
-
-// 약한 비밀번호 검증 헬퍼 함수
-const isWeakPassword = (password) => {
-  const weakPatterns = [
-    /^(.)\1{3,}$/, // 1111, aaaa 등 4자리 이상 반복
-    /^1234(5?6?7?8?9?)?$/, // 1234, 12345 등 순차적
-    /^0000$/, // 0000
-  ];
-  return weakPatterns.some(pattern => pattern.test(password));
-};
 
 // 예약 생성/수정 API
 app.post('/api/reservations', limiter, async (req, res) => {
@@ -309,15 +360,21 @@ app.delete('/api/reservations/:id', async (req, res) => {
 // 모든 예약 삭제 API (비밀번호 불필요, 관리자 이름 로그 추가)
 app.delete('/api/reservations/all', async (req, res) => {
   const { adminUsername } = req.body; // 관리자 이름 받음 (옵션)
-  const loggedAdminUser = adminUsername ? `관리자(${adminUsername}) ` : '';
+  const clientIp = req.ip;
+
+  // 관리자 이름이 없거나 허용되지 않은 관리자 이름일 경우 거부
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`모든 예약 취소 실패 (관리자 인증 실패: ${adminUsername || '미지정'}) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '모든 예약 취소 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
 
   try {
     await Reservation.deleteMany({});
-    console.log(`${loggedAdminUser}[모든 예약 취소 성공] 모든 예약이 취소되었습니다. - 시간: ${new Date().toISOString()}`);
+    console.log(`관리자(${adminUsername})[모든 예약 취소 성공] 모든 예약이 취소되었습니다. - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     io.emit('reservationsUpdated', []); // 프론트엔드에 업데이트된 빈 배열 전송
     res.json({ success: true, message: '모든 예약이 취소되었습니다.' });
   } catch (e) {
-    console.error(`${loggedAdminUser}전체 예약 취소 실패:`, e);
+    console.error(`관리자(${adminUsername}) 전체 예약 취소 실패:`, e);
     res.status(500).json({ message: '서버 오류' });
   }
 });
@@ -340,7 +397,14 @@ app.get('/api/admin-settings', async (req, res) => {
 // 관리자 설정 저장 API (예약 가능 시간, 관리자 이름 로그 추가)
 app.put('/api/admin-settings', async (req, res) => {
   const { reservationStartTime, reservationEndTime, adminUsername } = req.body; // 관리자 이름 받음
+  const clientIp = req.ip;
   const loggedAdminUser = adminUsername ? `관리자(${adminUsername}) ` : '';
+
+  // 관리자 인증 (추가)
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`${loggedAdminUser}관리자 설정 저장 실패 (인증 실패) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '설정 변경 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
 
   try {
     const settings = await AdminSetting.findOneAndUpdate(
@@ -348,7 +412,7 @@ app.put('/api/admin-settings', async (req, res) => {
       { reservationStartTime, reservationEndTime },
       { new: true, upsert: true } // 없으면 새로 생성
     );
-    console.log(`${loggedAdminUser}[관리자 설정 저장 성공] 예약 시간 설정됨: ${reservationStartTime} ~ ${reservationEndTime} - 시간: ${new Date().toISOString()}`);
+    console.log(`${loggedAdminUser}[관리자 설정 저장 성공] 예약 시간 설정됨: ${reservationStartTime} ~ ${reservationEndTime} - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     io.emit('settingsUpdated', settings); // 모든 클라이언트에 설정 업데이트 알림
     res.json({ success: true, message: '예약 가능 시간이 설정되었습니다.', settings });
   } catch (e) {
@@ -375,7 +439,14 @@ app.get('/api/announcement', async (req, res) => {
 // 일반 사용자용 공지사항 저장 API (관리자 이름 로그 추가)
 app.put('/api/announcement', async (req, res) => {
   const { message, active, adminUsername } = req.body; // 관리자 이름 받음
+  const clientIp = req.ip;
   const loggedAdminUser = adminUsername ? `관리자(${adminUsername}) ` : '';
+
+  // 관리자 인증 (추가)
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`${loggedAdminUser}일반 공지사항 저장 실패 (인증 실패) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '공지사항 변경 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
 
   try {
     const announcement = await Announcement.findOneAndUpdate(
@@ -383,7 +454,7 @@ app.put('/api/announcement', async (req, res) => {
       { message, active, updatedAt: new Date() },
       { new: true, upsert: true } // 없으면 새로 생성
     );
-    console.log(`${loggedAdminUser}[일반 공지사항 업데이트 성공] 활성=${active}, 내용=${message ? message.substring(0, 30) : ''}... - 시간: ${new Date().toISOString()}`);
+    console.log(`${loggedAdminUser}[일반 공지사항 업데이트 성공] 활성=${active}, 내용=${message ? message.substring(0, Math.min(message.length, 30)) : ''}... - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     io.emit('announcementUpdated', announcement); // 모든 클라이언트에 공지사항 업데이트 알림
     res.json({ success: true, message: '공지사항이 저장되었습니다.' });
   } catch (e) {
@@ -392,7 +463,7 @@ app.put('/api/announcement', async (req, res) => {
   }
 });
 
-// 관리자 전용 공지사항 조회 API (새로운 기능)
+// 관리자 전용 공지사항 조회 API
 app.get('/api/admin-announcement', async (req, res) => {
   try {
     let announcement = await AdminOnlyAnnouncement.findOne({ key: 'adminOnlyAnnouncement' });
@@ -407,10 +478,17 @@ app.get('/api/admin-announcement', async (req, res) => {
   }
 });
 
-// 관리자 전용 공지사항 저장 API (새로운 기능, 관리자 이름 로그 추가)
+// 관리자 전용 공지사항 저장 API (관리자 이름 로그 추가)
 app.put('/api/admin-announcement', async (req, res) => {
   const { message, active, adminUsername } = req.body; // 관리자 이름 받음
+  const clientIp = req.ip;
   const loggedAdminUser = adminUsername ? `관리자(${adminUsername}) ` : '';
+
+  // 관리자 인증 (추가)
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`${loggedAdminUser}관리자 전용 공지사항 저장 실패 (인증 실패) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '관리자 전용 공지사항 변경 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
 
   try {
     const announcement = await AdminOnlyAnnouncement.findOneAndUpdate(
@@ -418,7 +496,7 @@ app.put('/api/admin-announcement', async (req, res) => {
       { message, active, updatedAt: new Date() },
       { new: true, upsert: true } // 없으면 새로 생성
     );
-    console.log(`${loggedAdminUser}[관리자 전용 공지사항 업데이트 성공] 활성=${active}, 내용=${message ? message.substring(0, 30) : ''}... - 시간: ${new Date().toISOString()}`);
+    console.log(`${loggedAdminUser}[관리자 전용 공지사항 업데이트 성공] 활성=${active}, 내용=${message ? message.substring(0, Math.min(message.length, 30)) : ''}... - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     io.emit('adminAnnouncementUpdated', announcement); // 모든 클라이언트에 업데이트 알림 (adminAnnouncementUpdated 이벤트 추가)
     res.json({ success: true, message: '관리자 전용 공지사항이 저장되었습니다.' });
   } catch (e) {
@@ -442,6 +520,13 @@ app.post('/api/admin/reservations/:id/view-plain-password', async (req, res) => 
     console.log(`${loggedAdminUser}[비밀번호 열람 실패 (관리자 비번 오류)] - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     return res.status(401).json({ success: false, message: '관리자 비밀번호가 틀렸습니다.' });
   }
+  
+  // 관리자 인증 (추가)
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`${loggedAdminUser}예약 비밀번호 열람 실패 (인증 실패) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '비밀번호 열람 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
+
   try {
     const reservation = await Reservation.findById(id).select('plainPassword name roomNo dormitory floor seat'); // 상세 정보 추가 조회
     if (!reservation) {
@@ -473,7 +558,7 @@ io.on('connection', async (socket) => {
     socket.emit('announcementInitial', announcement); // 일반 공지사항
     
     const adminAnnouncement = await AdminOnlyAnnouncement.findOne({ key: 'adminOnlyAnnouncement' });
-    socket.emit('adminOnlyAnnouncementInitial', adminAnnouncement); // 관리자 전용 공지사항 (새로운 이벤트)
+    socket.emit('adminOnlyAnnouncementInitial', adminAnnouncement); // 관리자 전용 공지사항
 
   } catch (e) {
     console.error('초기 데이터 전송 실패:', e);
