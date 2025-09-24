@@ -1,3 +1,5 @@
+// app.js: Node.js + Express + MongoDB + Socket.IO 서버 전체 코드
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -58,14 +60,14 @@ app.use(express.json());
 // 프록시 환경 대응 (Render, Heroku 등)
 app.set('trust proxy', 1);
 
-// 요청 속도 제한 - 1분 최대 20회, 단 /api/reservations/all 제외 (이 경우 의미는 적음)
+// 요청 속도 제한 - 1분 최대 20회, 단 /api/reservations/all 제외
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
   message: '너무 많은 요청입니다. 잠시 후 다시 시도해 주세요.',
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path === '/api/reservations/all', // 이제 인증 없으니 사실상 무제한 요청 가능
+  skip: (req) => req.path === '/api/reservations/all', 
 });
 
 // MongoDB 연결
@@ -327,16 +329,24 @@ app.delete('/api/reservations/:id', async (req, res) => {
   }
 });
 
-// --- 주의: 이 엔드포인트는 인증 없이 모든 예약을 삭제합니다. 보안에 매우 취약합니다. ---
+// 모든 예약 삭제 API (관리자 이름만 검증하며 비밀번호 추가 확인 없음)
 app.delete('/api/reservations/all', async (req, res) => {
+  const { adminUsername } = req.body; // 관리자 이름만 받음
   const clientIp = req.ip;
+
+  // 관리자 이름이 없거나 허용되지 않은 관리자 이름일 경우 거부 (최소한의 인증)
+  if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`모든 예약 취소 실패 (관리자 인증 실패: ${adminUsername || '미지정'}) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    return res.status(403).json({ message: '모든 예약 취소 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+  }
+
   try {
     await Reservation.deleteMany({});
-    console.warn(`[심각한 보안 경고] 모든 예약이 인증 없이 삭제되었습니다. IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
+    console.warn(`[모든 예약 삭제 완료] 관리자(${adminUsername})에 의해 모든 예약이 삭제되었습니다. IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
     io.emit('reservationsUpdated', []); // 프론트엔드에 업데이트된 빈 배열 전송
-    res.json({ success: true, message: '모든 예약이 인증 없이 삭제되었습니다.' });
+    res.json({ success: true, message: `관리자(${adminUsername})에 의해 모든 예약이 삭제되었습니다.` });
   } catch (e) {
-    console.error(`모든 예약 삭제 실패 (인증 없음):`, e);
+    console.error(`관리자(${adminUsername})의 모든 예약 삭제 실패:`, e);
     res.status(500).json({ message: '서버 오류' });
   }
 });
@@ -356,9 +366,9 @@ app.get('/api/admin-settings', async (req, res) => {
   }
 });
 
-// 관리자 설정 저장 API (예약 가능 시간, 관리자 이름 로그 추가)
+// 관리자 설정 저장 API (예약 가능 시간, 관리자 이름/비밀번호 검증)
 app.put('/api/admin-settings', async (req, res) => {
-  const { reservationStartTime, reservationEndTime, adminUsername, adminPassword } = req.body; // 관리자 이름 받음
+  const { reservationStartTime, reservationEndTime, adminUsername, adminPassword } = req.body;
   const clientIp = req.ip;
 
   // 관리자 인증 (비밀번호, 이름 모두 검증)
@@ -405,9 +415,9 @@ app.get('/api/announcement', async (req, res) => {
   }
 });
 
-// 일반 사용자용 공지사항 저장 API (관리자 이름 로그 추가)
+// 일반 사용자용 공지사항 저장 API (관리자 이름/비밀번호 검증)
 app.put('/api/announcement', async (req, res) => {
-  const { message, active, adminUsername, adminPassword } = req.body; // 관리자 이름 받음
+  const { message, active, adminUsername, adminPassword } = req.body;
   const clientIp = req.ip;
 
   // 관리자 인증 (비밀번호, 이름 모두 검증)
@@ -454,9 +464,9 @@ app.get('/api/admin-announcement', async (req, res) => {
   }
 });
 
-// 관리자 전용 공지사항 저장 API (관리자 이름 로그 추가)
+// 관리자 전용 공지사항 저장 API (관리자 이름/비밀번호 검증)
 app.put('/api/admin-announcement', async (req, res) => {
-  const { message, active, adminUsername, adminPassword } = req.body; // 관리자 이름 받음
+  const { message, active, adminUsername, adminPassword } = req.body;
   const clientIp = req.ip;
 
   // 관리자 인증 (비밀번호, 이름 모두 검증)
@@ -488,10 +498,10 @@ app.put('/api/admin-announcement', async (req, res) => {
   }
 });
 
-// 관리자용 예약 비밀번호 열람 API
+// 관리자용 예약 비밀번호 열람 API (관리자 이름/비밀번호 검증)
 app.post('/api/admin/reservations/:id/view-plain-password', async (req, res) => {
   const { id } = req.params;
-  const { adminPassword, adminUsername } = req.body; // 관리자 이름도 받음
+  const { adminPassword, adminUsername } = req.body;
   const clientIp = req.ip;
 
   // 관리자 인증 (비밀번호, 이름 모두 검증)
