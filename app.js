@@ -299,13 +299,27 @@ app.put('/api/reservations/update/:id', limiter, async (req, res) => {
   }
 });
 
-// 개별 예약 삭제 API (관리자 이름 로그 추가)
+// 개별 예약 삭제 API (관리자일 경우 비밀번호 없이 삭제 가능하도록 수정)
 app.delete('/api/reservations/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { password, adminUsername } = req.body; // 관리자 이름도 받음 (옵션)
+    
+    // 1. 관리자 권한이 있는 경우: 관리자 이름만 검증하고 예약자 비밀번호 확인 건너뛰기
+    if (adminUsername && ADMIN_USERNAMES.includes(adminUsername)) {
+      const existingReservation = await Reservation.findById(id);
+      if (!existingReservation) return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
+      
+      await Reservation.findByIdAndDelete(id);
+      console.log(`관리자(${adminUsername})에 의해 예약 취소됨: ${existingReservation.name} (${existingReservation.roomNo}, ${existingReservation.dormitory} ${existingReservation.floor}층 ${existingReservation.seat}번)`);
+      const allReservations = await Reservation.find({});
+      io.emit('reservationsUpdated', allReservations);
+      return res.json({ success: true, message: `관리자(${adminUsername})가 예약을 취소했습니다.` });
+    }
+    
+    // 2. 관리자가 아닌 경우 또는 adminUsername이 유효하지 않은 경우: 예약자 비밀번호 확인
     if (!password)
-      return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
+      return res.status(400).json({ message: '예약 비밀번호를 입력해주세요.' });
 
     const existingReservation = await Reservation.findById(id);
     if (!existingReservation)
@@ -316,8 +330,7 @@ app.delete('/api/reservations/:id', async (req, res) => {
       return res.status(401).json({ success: false, message: '예약 비밀번호가 일치하지 않습니다.' });
 
     await Reservation.findByIdAndDelete(id);
-    const loggedAdminUser = adminUsername ? `관리자(${adminUsername}) ` : '';
-    console.log(`${loggedAdminUser}[예약 취소 성공] ${existingReservation.name} (${existingReservation.roomNo}, ${existingReservation.dormitory} ${existingReservation.floor}층 ${existingReservation.seat}번) 예약 취소.`);
+    console.log(`사용자에 의해 예약 취소됨: ${existingReservation.name} (${existingReservation.roomNo}, ${existingReservation.dormitory} ${existingReservation.floor}층 ${existingReservation.seat}번)`);
 
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
@@ -329,7 +342,7 @@ app.delete('/api/reservations/:id', async (req, res) => {
   }
 });
 
-// 모든 예약 삭제 API (관리자 이름만 검증하며 비밀번호 추가 확인 없음)
+// 모든 예약 삭제 API (관리자 이름만 검증하며, 추가 비밀번호 확인 없음)
 app.delete('/api/reservations/all', async (req, res) => {
   const { adminUsername } = req.body; // 관리자 이름만 받음
   const clientIp = req.ip;
