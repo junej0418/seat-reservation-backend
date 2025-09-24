@@ -299,67 +299,58 @@ app.put('/api/reservations/update/:id', limiter, async (req, res) => {
   }
 });
 
-// 개별 예약 삭제 API (관리자일 경우 비밀번호 없이 삭제 가능하도록 수정)
+// 개별 예약 취소 API 수정
 app.delete('/api/reservations/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { password, adminUsername } = req.body; // 관리자 이름도 받음 (옵션)
-    
-    // 1. 관리자 권한이 있는 경우: 관리자 이름만 검증하고 예약자 비밀번호 확인 건너뛰기
+    const { password, adminUsername } = req.body;
+
+    // 관리자 이름이 있으면 비밀번호 검증 없이 삭제 허용
     if (adminUsername && ADMIN_USERNAMES.includes(adminUsername)) {
       const existingReservation = await Reservation.findById(id);
       if (!existingReservation) return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
-      
+
       await Reservation.findByIdAndDelete(id);
-      console.log(`관리자(${adminUsername})에 의해 예약 취소됨: ${existingReservation.name} (${existingReservation.roomNo}, ${existingReservation.dormitory} ${existingReservation.floor}층 ${existingReservation.seat}번)`);
+      console.log(`관리자(${adminUsername}) 예약 취소: ${existingReservation.name} (${existingReservation.roomNo})`);
       const allReservations = await Reservation.find({});
       io.emit('reservationsUpdated', allReservations);
-      return res.json({ success: true, message: `관리자(${adminUsername})가 예약을 취소했습니다.` });
+      return res.json({ success: true, message: '관리자 권한으로 예약이 취소되었습니다.' });
     }
-    
-    // 2. 관리자가 아닌 경우 또는 adminUsername이 유효하지 않은 경우: 예약자 비밀번호 확인
-    if (!password)
-      return res.status(400).json({ message: '예약 비밀번호를 입력해주세요.' });
+
+    // 관리자 이름 없으면 기존대로 사용자 비밀번호 검증 필요
+    if (!password) return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
 
     const existingReservation = await Reservation.findById(id);
-    if (!existingReservation)
-      return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
+    if (!existingReservation) return res.status(404).json({ message: '예약을 찾을 수 없습니다.' });
 
     const isPasswordCorrect = await bcrypt.compare(password, existingReservation.password);
-    if (!isPasswordCorrect)
-      return res.status(401).json({ success: false, message: '예약 비밀번호가 일치하지 않습니다.' });
+    if (!isPasswordCorrect) return res.status(401).json({ message: '비밀번호가 일치하지 않습니다.' });
 
     await Reservation.findByIdAndDelete(id);
-    console.log(`사용자에 의해 예약 취소됨: ${existingReservation.name} (${existingReservation.roomNo}, ${existingReservation.dormitory} ${existingReservation.floor}층 ${existingReservation.seat}번)`);
-
+    console.log(`사용자 예약 취소: ${existingReservation.name} (${existingReservation.roomNo})`);
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
-
-    res.json({ success: true, message: '예약 취소 완료' });
+    res.json({ success: true, message: '예약이 취소되었습니다.' });
   } catch (e) {
-    console.error('예약 취소 중 오류:', e);
+    console.error('예약 취소 오류:', e);
     res.status(500).json({ message: '서버 오류' });
   }
 });
 
-// 모든 예약 삭제 API (관리자 이름만 검증하며, 추가 비밀번호 확인 없음)
+// 모든 예약 취소 API (관리자 이름만 확인, 비밀번호 인증 없이)
 app.delete('/api/reservations/all', async (req, res) => {
-  const { adminUsername } = req.body; // 관리자 이름만 받음
-  const clientIp = req.ip;
-
-  // 관리자 이름이 없거나 허용되지 않은 관리자 이름일 경우 거부 (최소한의 인증)
+  const { adminUsername } = req.body;
   if (!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
-    console.log(`모든 예약 취소 실패 (관리자 인증 실패: ${adminUsername || '미지정'}) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.status(403).json({ message: '모든 예약 취소 권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
+    return res.status(403).json({ message: '권한이 없습니다. 관리자로 로그인했는지 확인해주세요.' });
   }
 
   try {
     await Reservation.deleteMany({});
-    console.warn(`[모든 예약 삭제 완료] 관리자(${adminUsername})에 의해 모든 예약이 삭제되었습니다. IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    io.emit('reservationsUpdated', []); // 프론트엔드에 업데이트된 빈 배열 전송
-    res.json({ success: true, message: `관리자(${adminUsername})에 의해 모든 예약이 삭제되었습니다.` });
+    console.log(`관리자(${adminUsername}) 모든 예약을 취소함.`);
+    io.emit('reservationsUpdated', []);
+    res.json({ success: true, message: '모든 예약이 취소되었습니다.' });
   } catch (e) {
-    console.error(`관리자(${adminUsername})의 모든 예약 삭제 실패:`, e);
+    console.error('전체 예약 취소 오류:', e);
     res.status(500).json({ message: '서버 오류' });
   }
 });
