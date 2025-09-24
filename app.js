@@ -1,3 +1,5 @@
+// app.js: Node.js + Express + MongoDB + Socket.IO 서버 전체 코드
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -21,18 +23,22 @@ const allowedOrigins = [
   'https://heartfelt-cannoli-903df2.netlify.app',
 ];
 
+// Socket.IO 서버 설정 + CORS 구성
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (!allowedOrigins.includes(origin)) return callback(new Error('CORS 차단된 도메인'), false);
+      if (!allowedOrigins.includes(origin)) {
+        return callback(new Error('CORS 차단된 도메인'), false);
+      }
       callback(null, true);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
-  }
+  },
 });
 
+// 서버 포트 설정 및 환경변수
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
@@ -41,24 +47,28 @@ const ADMIN_USERNAMES = process.env.ADMIN_USERNAMES ? process.env.ADMIN_USERNAME
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    if (!allowedOrigins.includes(origin)) return callback(new Error('CORS 차단된 도메인'), false);
+    if (!allowedOrigins.includes(origin)) {
+      return callback(new Error('CORS 차단된 도메인'), false);
+    }
     callback(null, true);
   },
   credentials: true,
 }));
+
+// JSON 요청 본문 파싱 미들웨어
 app.use(express.json());
 
-// Render 등 프록시 환경에서 클라이언트 IP를 정확히 식별하기 위한 설정
-// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 오류를 해결합니다.
+// 프록시 환경 대응 (Render, Heroku 등)
 app.set('trust proxy', 1);
 
+// 요청 속도 제한 - 1분 최대 20회, 단 /api/reservations/all 제외
 const limiter = rateLimit({
-  windowMs: 60000, // 1분
-  max: 20, // 1분당 최대 20회 요청 허용
-  message: '너무 많은 요청입니다. 잠시 후 시도해주세요.',
-  standardHeaders: true, // RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset 헤더 활성화
-  legacyHeaders: false, // X-RateLimit-* 헤더 비활성화
-  skip: req => req.path === '/api/reservations/all', // 모든 예약 삭제 API는 리밋에서 제외 (관리자용)
+  windowMs: 60 * 1000,
+  max: 20,
+  message: '너무 많은 요청입니다. 잠시 후 다시 시도해 주세요.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === '/api/reservations/all',
 });
 
 // MongoDB 연결
@@ -67,210 +77,172 @@ mongoose.connect(MONGO_URI, {
   useUnifiedTopology: true,
   serverSelectionTimeoutMS: 15000,
 })
-  .then(() => console.log('MongoDB 연결 성공'))
-  .catch(err => console.error('MongoDB 연결 실패:', err));
+.then(() => console.log('MongoDB 연결 성공'))
+.catch((err) => console.error('MongoDB 연결 실패:', err));
 
-// --- Mongoose 스키마 및 모델 정의 ---
-
-// 예약 스키마
+// 예약 스키마 및 모델
 const reservationSchema = new mongoose.Schema({
   roomNo: { type: String, required: true },
   name: { type: String, required: true },
   dormitory: { type: String, required: true },
   floor: { type: String, required: true },
   seat: { type: Number, required: true },
-  password: { type: String, required: true }, // 비밀번호 (해싱됨)
-  plainPassword: { type: String, required: true }, // 관리자 확인용 평문 비밀번호 (보안 주의: 실서비스에서는 사용 자제)
+  password: { type: String, required: true }, // 해싱 저장
+  plainPassword: { type: String, required: true }, // 관리자 확인용 평문 비밀번호
   createdAt: { type: Date, default: Date.now },
 });
-reservationSchema.index({ roomNo: 1, name: 1 }, { unique: true }); // roomNo와 name 조합은 유일해야 함
-reservationSchema.index({ dormitory: 1, floor: 1, seat: 1 }, { unique: true }); // 기숙사, 층, 좌석 조합은 유일해야 함
+
+// 인덱스 설정 - 룸번호+이름, 시설+층+좌석 중복 방지용
+reservationSchema.index({ roomNo: 1, name: 1 }, { unique: true });
+reservationSchema.index({ dormitory: 1, floor: 1, seat: 1 }, { unique: true });
 
 // 비밀번호 저장 전 해싱
-reservationSchema.pre('save', async function (next) {
-  // `isModified('password')` 확인 추가: 비밀번호가 변경될 때만 해싱
-  // `this.password.length < 50` 추가: 이미 해싱된 비밀번호(bcrypt 해시값은 보통 60자 이상)는 다시 해싱하지 않도록 방지
+reservationSchema.pre('save', async function(next) {
   if (this.isModified('password') && this.password.length < 50) {
-    this.password = await bcrypt.hash(this.password, 10); // 솔트 라운드 10
+    this.password = await bcrypt.hash(this.password, 10);
   }
   next();
 });
+
 const Reservation = mongoose.model('Reservation', reservationSchema);
 
-// 관리자 설정 스키마 (예약 가능 시간)
+// 관리자 예약 가능 시간 설정 스키마 및 모델
 const adminSettingSchema = new mongoose.Schema({
-  key: { type: String, unique: true, required: true }, // 'reservationTimes'로 고정
+  key: { type: String, unique: true, required: true }, // 항상 'reservationTimes'
   reservationStartTime: { type: Date, default: null },
   reservationEndTime: { type: Date, default: null },
 });
 const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema);
 
-// 일반 사용자용 공지사항 스키마
+// 일반 공지사항 스키마 및 모델
 const announcementSchema = new mongoose.Schema({
-  key: { type: String, unique: true, default: 'currentAnnouncement' }, // 'currentAnnouncement'로 고정
+  key: { type: String, unique: true, default: 'currentAnnouncement' },
   message: { type: String, default: '' },
   active: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now },
 });
 const Announcement = mongoose.model('Announcement', announcementSchema);
 
-// 관리자 전용 공지사항 스키마 (새로운 기능)
+// 관리자 전용 공지사항 스키마 및 모델
 const adminOnlyAnnouncementSchema = new mongoose.Schema({
-  key: { type: String, unique: true, default: 'adminOnlyAnnouncement' }, // 'adminOnlyAnnouncement'로 고정
+  key: { type: String, unique: true, default: 'adminOnlyAnnouncement' },
   message: { type: String, default: '' },
   active: { type: Boolean, default: false },
   updatedAt: { type: Date, default: Date.now },
 });
 const AdminOnlyAnnouncement = mongoose.model('AdminOnlyAnnouncement', adminOnlyAnnouncementSchema);
 
-// 약한 비밀번호 검증 헬퍼 함수
-const isWeakPassword = (password) => {
-  const passwordLower = password.toLowerCase();
-  const passwordLength = password.length;
-
-  // 1. 단순한 약한 패턴들 (Regex 사용)
-  const simpleWeakPatterns = [
-      /^(.)\1{3,}$/,       // 4자리 이상 동일한 문자/숫자 반복 (예: 1111, aaaa, ####)
-      // 키보드 상의 연속 패턴들 (4자리 이상부터)
-      /^abcd(e?f?g?h?i?j?k?l?m?n?o?p?q?r?s?t?u?v?w?x?y?z?)?$/, // 알파벳 순차 (abcd...)
-      /^qwer(t?y?u?i?o?p?)?$/,                               // QWERTY 키보드 상위열 (qwer...)
-      /^asdf(g?h?j?k?l?)?$/,                               // QWERTY 키보드 중간열 (asdf...)
-      /^zxcv(b?n?m?)?$/,                                   // QWERTY 키보드 하위열 (zxcv...)
+// 약한 비밀번호 체크 함수
+function isWeakPassword(password) {
+  const p = password.toLowerCase();
+  const len = p.length;
+  const simplePatterns = [
+    /^(.)\1{3,}$/,
+    /^abcd(e?f?g?h?i?j?k?l?m?n?o?p?q?r?s?t?u?v?w?x?y?z?)?$/,
+    /^qwer(t?y?u?i?o?p?)?$/,
+    /^asdf(g?h?j?k?l?)?$/,
+    /^zxcv(b?n?m?)?$/
   ];
-
-  if (simpleWeakPatterns.some(pattern => pattern.test(passwordLower))) {
-      return true;
-  }
-
-  // 2. 루프 기반의 순차/역순차 검사 (숫자 및 알파벳) - 4자리 이상 연속될 경우
-  if (passwordLength >= 4) {
-      for (let i = 0; i <= passwordLength - 4; i++) {
-          const sub = passwordLower.substring(i, i + 4); // 4자리씩 슬라이딩 윈도우
-
-          // 순차/역순차 숫자 검사
-          if (/^\d{4}$/.test(sub)) { // 4자리가 모두 숫자인지 확인
-              const d0 = parseInt(sub[0], 10);
-              const d1 = parseInt(sub[1], 10);
-              const d2 = parseInt(sub[2], 10);
-              const d3 = parseInt(sub[3], 10);
-
-              // 순차적 (예: 1234, 5678, 6789) 또는 역순차적 (예: 4321, 9876)
-              if ((d1 === d0 + 1 && d2 === d1 + 1 && d3 === d2 + 1) ||
-                  (d1 === d0 - 1 && d2 === d1 - 1 && d3 === d2 - 1)) {
-                  return true;
-              }
-          }
-
-          // 순차/역순차 알파벳 검사
-          if (/^[a-z]{4}$/.test(sub)) { // 4자리가 모두 알파벳인지 확인
-              const c0 = sub.charCodeAt(0);
-              const c1 = sub.charCodeAt(1);
-              const c2 = sub.charCodeAt(2);
-              const c3 = sub.charCodeAt(3);
-
-              // 순차적 (예: abcd, efgh) 또는 역순차적 (예: dcba, hgfe)
-              if ((c1 === c0 + 1 && c2 === c1 + 1 && c3 === c2 + 1) ||
-                  (c1 === c0 - 1 && c2 === c1 - 1 && c3 === c2 - 1)) {
-                  return true;
-              }
-          }
+  if(simplePatterns.some(pat => pat.test(p))) return true;
+  if(len >= 4){
+    for(let i=0; i<=len-4; i++){
+      const sub = p.substr(i,4);
+      if(/^\d{4}$/.test(sub)){
+        const d=sub.split('').map(x => parseInt(x));
+        if ((d[1]===d[0]+1 && d[2]===d[1]+1 && d[3]===d[2]+1) ||
+            (d[1]===d[0]-1 && d[2]===d[1]-1 && d[3]===d[2]-1)) return true;
       }
+      if(/^[a-z]{4}$/.test(sub)){
+        const c=sub.split('').map(x=>x.charCodeAt(0));
+        if((c[1]===c[0]+1 && c[2]===c[1]+1 && c[3]===c[2]+1) ||
+           (c[1]===c[0]-1 && c[2]===c[1]-1 && c[3]===c[2]-1)) return true;
+      }
+    }
   }
+  return false;
+}
 
-  return false; // 위 패턴에 해당하지 않으면 안전하다고 판단
-};
-
-
-// --- API 라우터 정의 ---
-
-// 관리자 로그인 API (이름 검증 추가)
+// 관리자 로그인 (이름+비밀번호 검증)
 app.post('/api/admin-login', (req, res) => {
-  const { password, username } = req.body; // 사용자 이름도 받음
-  const clientIp = req.ip;
-
+  const { password, username } = req.body;
+  const ip = req.ip;
   if (!username || !password) {
-    console.log(`관리자 로그인 실패 (필수 정보 누락) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.status(400).json({ success: false, message: '이름과 비밀번호를 모두 입력해주세요.' });
+    console.log(`[관리자 로그인 실패] 필수 입력 누락 IP:${ip} 시간:${new Date().toISOString()}`);
+    return res.status(400).json({ success:false, message:'이름과 비밀번호를 모두 입력하세요.' });
   }
   if (!ADMIN_PASSWORD) {
-    console.error(`서버 관리자 비밀번호 미설정 - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.status(500).json({ success: false, message: '서버 관리자 비밀번호가 설정되지 않았습니다.' });
+    console.error(`[관리자 로그인 실패] 미설정된 관리자 비밀번호 IP:${ip} 시간:${new Date().toISOString()}`);
+    return res.status(500).json({ success:false, message:'서버 관리자 비밀번호 미설정' });
   }
   if (!ADMIN_USERNAMES.includes(username)) {
-    console.log(`관리자 로그인 실패 (이름 오류: ${username}) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.status(401).json({ success: false, message: '허용되지 않은 관리자 이름입니다.' });
+    console.log(`[관리자 로그인 실패] 허용되지 않은 이름(${username}) IP:${ip} 시간:${new Date().toISOString()}`);
+    return res.status(401).json({ success:false, message:'허용되지 않은 관리자 이름입니다.' });
   }
-  if (password === ADMIN_PASSWORD) { // 비밀번호는 평문 비교
-    console.log(`관리자 로그인 성공 - 이름: ${username} - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.json({ success: true, message: '관리자 로그인 성공' });
-  } else {
-    console.log(`관리자 로그인 실패 (비밀번호 오류: ${username}) - IP: ${clientIp} - 시간: ${new Date().toISOString()}`);
-    return res.status(401).json({ success: false, message: '비밀번호가 틀렸습니다.' });
+  if (password === ADMIN_PASSWORD) {
+    console.log(`[관리자 로그인 성공] 이름:${username} IP:${ip} 시간:${new Date().toISOString()}`);
+    return res.json({ success:true, message:'관리자 로그인 성공' });
   }
+  console.log(`[관리자 로그인 실패] 비밀번호 오류(${username}) IP:${ip} 시간:${new Date().toISOString()}`);
+  return res.status(401).json({ success:false, message:'비밀번호가 틀렸습니다.' });
 });
 
-// 예약 전체 조회 API
+// 예약 조회
 app.get('/api/reservations', async (req, res) => {
   try {
     const reservations = await Reservation.find({});
     res.json(reservations);
-  } catch (e) {
+  } catch(e) {
     console.error('예약 조회 실패:', e);
     res.status(500).json({ message: '서버 오류' });
   }
 });
 
-// 예약 생성/수정 API
+// 예약 생성 또는 수정(변경)
 app.post('/api/reservations', limiter, async (req, res) => {
-  if (req.body.honeypot_field) return res.status(400).json({ message: '비정상적 요청' });
-
+  if (req.body.honeypot_field) return res.status(400).json({message: '비정상적 요청'});
+  
   const { roomNo, name, dormitory, floor, seat, password } = req.body;
-  if (!roomNo || !name || !dormitory || !floor || seat == null || !password)
-    return res.status(400).json({ message: '모든 정보를 입력하세요.' });
-
-  // 약한 비밀번호 검증
-  if (isWeakPassword(password)) {
-    return res.status(400).json({ message: '매우 단순한 비밀번호는 사용할 수 없습니다. 다른 비밀번호를 사용해주세요.' });
-  }
-
+  if(!roomNo || !name || !dormitory || !floor || seat == null || !password) 
+    return res.status(400).json({message: '모든 정보를 입력하세요.'});
+  
+  if(isWeakPassword(password)) 
+    return res.status(400).json({message:'매우 단순한 비밀번호는 사용할 수 없습니다. 다른 비밀번호를 사용해주세요.'});
+  
   const adminSettings = await AdminSetting.findOne({ key: 'reservationTimes' });
-  if (!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime)
-    return res.status(403).json({ message: '예약 가능 시간이 설정되지 않았습니다.' });
-
+  if(!adminSettings || !adminSettings.reservationStartTime || !adminSettings.reservationEndTime)
+    return res.status(403).json({message: '예약 가능 시간이 설정되지 않았습니다.'});
+  
   const now = new Date();
-  if (now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime)
-    return res.status(403).json({ message: '현재 예약 가능 시간이 아닙니다.' });
-
+  if(now < adminSettings.reservationStartTime || now > adminSettings.reservationEndTime)
+    return res.status(403).json({message: '현재 예약 가능 시간이 아닙니다.'});
+  
   try {
     const conflictSeat = await Reservation.findOne({ dormitory, floor, seat });
     const existingUser = await Reservation.findOne({ roomNo, name });
-
-    if (conflictSeat && (!existingUser || existingUser._id.toString() !== conflictSeat._id.toString()))
+    if(conflictSeat && (!existingUser || existingUser._id.toString() !== conflictSeat._id.toString()))
       return res.status(409).json({ message: '선택한 좌석은 이미 예약되었습니다.' });
-
+    
     let reservation;
-    if (existingUser) { // 기존 사용자 -> 예약 변경
+    if(existingUser){
       const isPasswordCorrect = await bcrypt.compare(password, existingUser.password);
-      if (!isPasswordCorrect)
-        return res.status(401).json({ success: false, message: '예약 비밀번호가 일치하지 않습니다.' });
-
+      if(!isPasswordCorrect)
+        return res.status(401).json({ success:false, message:'예약 비밀번호가 일치하지 않습니다.' });
+      
       reservation = await Reservation.findByIdAndUpdate(existingUser._id, { dormitory, floor, seat }, { new: true });
-      console.log(`[예약 변경 성공] ${reservation.name} (${reservation.roomNo}) 좌석 변경됨. (기존: ${existingUser.dormitory} ${existingUser.floor}층 ${existingUser.seat}번 -> 신규: ${dormitory} ${floor}층 ${seat}번)`);
-    } else { // 신규 사용자 -> 예약 생성
+      console.log(`[예약 변경 성공] ${reservation.name} (${reservation.roomNo}) 좌석 변경됨. (신규 좌석: ${dormitory} ${floor}층 ${seat}번)`);
+    } else { 
       reservation = new Reservation({ roomNo, name, dormitory, floor, seat, password, plainPassword: password });
       await reservation.save();
       console.log(`[예약 생성 성공] ${reservation.name} (${reservation.roomNo}) 예약됨. (좌석: ${dormitory} ${floor}층 ${seat}번)`);
     }
-
     const allReservations = await Reservation.find({});
     io.emit('reservationsUpdated', allReservations);
-
-    res.json({ success: true, message: '예약 성공', newReservation: reservation });
-  } catch (e) {
+    res.json({ success:true, message:'예약 성공', newReservation: reservation });
+  } catch(e){
     console.error('예약 처리 중 오류:', e);
-    if (e.code === 11000)
-      return res.status(409).json({ message: '중복된 예약 정보가 있습니다.' });
-    res.status(500).json({ message: '서버 오류' });
+    if(e.code === 11000)
+      return res.status(409).json({message:'중복된 예약 정보가 있습니다.'});
+    res.status(500).json({message:'서버 오류'});
   }
 });
 
