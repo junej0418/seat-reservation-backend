@@ -175,7 +175,7 @@ app.post('/api/admin-login', (req,res)=>{
 });
 
 // 모든 예약 조회 API
-app.get('/api/reservations', async (req,res)=>{
+app.get('/api/reservations', async (req, res)=>{
   try{
     const reservations = await Reservation.find({});
     res.json(reservations);
@@ -186,7 +186,7 @@ app.get('/api/reservations', async (req,res)=>{
 });
 
 // 예약 생성 또는 수정 API
-app.post('/api/reservations', limiter, async (req, res)=>{
+app.post('/api/reservations', limiter, async (req,res) => {
   if(req.body.honeypot_field) return res.status(400).json({message:'비정상적 요청'}); // honeypot 필터
   const {roomNo, name, dormitory, floor, seat, password} = req.body;
   if(!roomNo || !name || !dormitory || !floor || seat === undefined || !password) 
@@ -231,6 +231,33 @@ app.post('/api/reservations', limiter, async (req, res)=>{
   }
 });
 
+// --- !!! 라우트 순서 변경: `/api/reservations/all` 라우트를 `:id` 라우트보다 먼저 정의 !!! ---
+// 모든 예약 취소 API (관리자 이름 및 비밀번호 검증)
+app.delete('/api/reservations/all', async(req, res)=>{
+  const {adminUsername, adminPassword} = req.body; // 관리자 이름과 비밀번호를 모두 받음
+  const clientIp = req.ip;
+
+  // 관리자 이름 및 비밀번호 검증
+  if(!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
+    console.log(`모든 예약 취소 실패 (권한 없음 - ${adminUsername || '미지정'}), IP: ${clientIp}`);
+    return res.status(403).json({message:'권한이 없습니다. 관리자 로그인 확인요망'});
+  }
+  if(adminPassword !== ADMIN_PASSWORD) {
+    console.log(`모든 예약 취소 실패 (관리자 비밀번호 불일치 - ${adminUsername}), IP: ${clientIp}`);
+    return res.status(401).json({success:false, message:'관리자 비밀번호가 틀렸습니다.'});
+  }
+
+  try{
+    await Reservation.deleteMany({}); // 모든 예약 삭제
+    console.warn(`[모든 예약 삭제] 관리자(${adminUsername})에 의해 모든 예약이 취소되었습니다. IP: ${clientIp}`);
+    io.emit('reservationsUpdated', []); // 모든 클라이언트에 예약 목록 비어있음을 알림
+    res.json({success:true,message:'모든 예약이 취소되었습니다.'});
+  }catch(e){
+    console.error('전체 예약 삭제 실패:', e);
+    res.status(500).json({message:'서버 오류'});
+  }
+});
+
 // 개별 예약 취소 API (관리자 권한 시 예약자 비밀번호 없이 바로 취소 가능)
 app.delete('/api/reservations/:id', async(req, res)=>{
   try{
@@ -263,29 +290,6 @@ app.delete('/api/reservations/:id', async(req, res)=>{
     res.json({success:true,message:'예약 취소 완료'});
   }catch(e){
     console.error('예약 취소 실패:', e);
-    res.status(500).json({message:'서버 오류'});
-  }
-});
-
-// 모든 예약 취소 API (관리자 이름만 검사, 비밀번호 입력 없음)
-app.delete('/api/reservations/all', async(req, res)=>{
-  const {adminUsername} = req.body;
-  const clientIp = req.ip;
-
-  // 관리자 이름 검증: 관리자 페이지에 로그인된 상태에서만 접근 가능하도록 프론트엔드에서 제어.
-  // 서버에서는 전송된 adminUsername이 유효한 관리자 목록에 있는지 확인
-  if(!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
-    console.log(`모든 예약 취소 실패 (권한 없음 - ${adminUsername || '미지정'}), IP: ${clientIp}`);
-    return res.status(403).json({message:'권한이 없습니다. 관리자 로그인 확인요망'});
-  }
-
-  try{
-    await Reservation.deleteMany({}); // 모든 예약 삭제
-    console.warn(`[모든 예약 삭제] 관리자(${adminUsername})에 의해 모든 예약이 취소되었습니다. IP: ${clientIp}`);
-    io.emit('reservationsUpdated', []); // 모든 클라이언트에 예약 목록 비어있음을 알림
-    res.json({success:true,message:'모든 예약이 취소되었습니다.'});
-  }catch(e){
-    console.error('전체 예약 삭제 실패:', e);
     res.status(500).json({message:'서버 오류'});
   }
 });
