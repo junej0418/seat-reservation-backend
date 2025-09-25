@@ -55,7 +55,7 @@ app.set('trust proxy', 1); // 프록시 환경에서 클라이언트 IP 정확�
 // 모든 예약 취소는 관리자 기능이므로 제외 (편의상)
 const limiter = rateLimit({
   windowMs: 60000, // 1분
-  max: 20, // 1분당 20회 요청
+  max: 30, // 1분당 20회 요청
   message: 'Too many requests, please try again later.', // 너무 많은 요청 시 메시지
   standardHeaders: true, // 표준 RateLimit 헤더 사용
   legacyHeaders: false, // 레거시 X-RateLimit 헤더 사용 안 함
