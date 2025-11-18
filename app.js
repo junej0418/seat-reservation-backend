@@ -94,14 +94,30 @@ reservationSchema.pre('save', async function(next){
   }
   next();
 });
+
 const Reservation = mongoose.model('Reservation', reservationSchema);
+
+// 개인정보 수집·이용 동의 스키마 정의
+const privacyConsentSchema = new mongoose.Schema({
+  roomNo: {type:String, required:true},
+  name: {type:String, required:true},
+  dormitory: {type:String, required:true},
+  consentedAt: {type:Date, default:Date.now}, // 동의 일시
+  ipAddress: {type:String, required:true} // 동의 시 IP 주소
+});
+
+// 인덱스 설정: 룸번호+이름+기숙사 조합으로 유일성 보장
+privacyConsentSchema.index({roomNo:1, name:1, dormitory:1}, {unique:true});
+
+const PrivacyConsent = mongoose.model('PrivacyConsent', privacyConsentSchema);
 
 // 관리자 예약 가능 시간 설정 스키마 정의
 const adminSettingSchema = new mongoose.Schema({
   key:{type:String, unique:true, required:true}, // 'reservationTimes'로 고정
   reservationStartTime: {type:Date, default:null}, // 예약 시작 가능 시간
-  reservationEndTime: {type:Date, default:null}   // 예약 종료 가능 시간
+  reservationEndTime: {type:Date, default:null} // 예약 종료 가능 시간
 });
+
 const AdminSetting = mongoose.model('AdminSetting', adminSettingSchema);
 
 // 일반 공지사항 스키마 정의
@@ -111,6 +127,7 @@ const announcementSchema = new mongoose.Schema({
   active:{type:Boolean, default:false}, // 공지 활성화 여부
   updatedAt:{type:Date, default:Date.now} // 마지막 업데이트 시간
 });
+
 const Announcement = mongoose.model('Announcement', announcementSchema);
 
 // 관리자 전용 공지사항 스키마 정의
@@ -120,6 +137,7 @@ const adminOnlyAnnouncementSchema = new mongoose.Schema({
   active:{type:Boolean, default:false}, // 관리자 전용 공지 활성화 여부
   updatedAt:{type:Date, default:Date.now} // 마지막 업데이트 시간
 });
+
 const AdminOnlyAnnouncement = mongoose.model('AdminOnlyAnnouncement', adminOnlyAnnouncementSchema);
 
 // 약한 비밀번호 검사 헬퍼 함수
@@ -136,7 +154,6 @@ function isWeakPassword(password){
   ];
   if(simplePatterns.some(r=>r.test(p))) return true;
   if(len < 4) return false; // 4자 미만은 약한 비밀번호 검사에 포함시키지 않음
-
   // 숫자 및 알파벳 연속/역순 4자리 패턴
   for(let i=0; i<=len-4; i++){
     const sub=p.substr(i,4);
@@ -151,6 +168,57 @@ function isWeakPassword(password){
   }
   return false;
 }
+
+// 개인정보 동의 여부 확인 API
+app.post('/api/check-privacy-consent', async (req,res) => {
+  const {roomNo, name, dormitory} = req.body;
+  if(!roomNo || !name || !dormitory) 
+    return res.status(400).json({success:false, message:'필수 정보가 누락되었습니다.'});
+  
+  try{
+    const consent = await PrivacyConsent.findOne({roomNo, name, dormitory});
+    if(consent){
+      res.json({success:true, consented:true});
+    } else {
+      res.json({success:true, consented:false});
+    }
+  }catch(e){
+    console.error('동의 확인 실패:', e);
+    res.status(500).json({success:false, message:'서버 오류'});
+  }
+});
+
+// 개인정보 동의 저장 API
+app.post('/api/save-privacy-consent', async (req,res) => {
+  const {roomNo, name, dormitory} = req.body;
+  const ipAddress = req.ip;
+  
+  if(!roomNo || !name || !dormitory) 
+    return res.status(400).json({success:false, message:'필수 정보가 누락되었습니다.'});
+  
+  try{
+    // 기존 동의가 있는지 확인
+    const existingConsent = await PrivacyConsent.findOne({roomNo, name, dormitory});
+    if(existingConsent){
+      return res.json({success:true, message:'이미 동의하셨습니다.'});
+    }
+    
+    // 새로운 동의 기록 생성
+    const consent = new PrivacyConsent({
+      roomNo,
+      name,
+      dormitory,
+      ipAddress
+    });
+    await consent.save();
+    console.log(`개인정보 동의 저장: ${name} (${roomNo}, ${dormitory}), IP: ${ipAddress}, 시간: ${new Date().toISOString()}`);
+    res.json({success:true, message:'개인정보 수집·이용 동의가 완료되었습니다.'});
+  }catch(e){
+    console.error('동의 저장 실패:', e);
+    if(e.code === 11000) return res.json({success:true, message:'이미 동의하셨습니다.'});
+    res.status(500).json({success:false, message:'서버 오류'});
+  }
+});
 
 // 관리자 로그인 API
 app.post('/api/admin-login', (req,res)=>{
@@ -189,15 +257,18 @@ app.get('/api/reservations', async (req, res)=>{
 app.post('/api/reservations', limiter, async (req,res) => {
   if(req.body.honeypot_field) return res.status(400).json({message:'비정상적 요청'}); // honeypot 필터
   const {roomNo, name, dormitory, floor, seat, password} = req.body;
-  if(!roomNo || !name || !dormitory || !floor || seat === undefined || !password) 
+  
+  if(!roomNo || !name || !dormitory || !floor || seat === undefined || !password)
     return res.status(400).json({message:'모든 정보가 필요합니다.'});
-  if(isWeakPassword(password)) 
+  
+  if(isWeakPassword(password))
     return res.status(400).json({message:'매우 단순한 비밀번호는 사용할 수 없습니다. 다른 비밀번호를 사용해주세요.'});
-
+  
   // 예약 가능 시간 확인
   const adminSetting = await AdminSetting.findOne({key:'reservationTimes'});
   if(!adminSetting || !adminSetting.reservationStartTime || !adminSetting.reservationEndTime)
     return res.status(403).json({message:'예약 가능 시간이 설정되지 않았습니다.'});
+  
   const now = new Date();
   if(now < adminSetting.reservationStartTime || now > adminSetting.reservationEndTime)
     return res.status(403).json({message:'현재 예약 가능 시간이 아닙니다.'});
@@ -205,11 +276,11 @@ app.post('/api/reservations', limiter, async (req,res) => {
   try {
     const conflict = await Reservation.findOne({dormitory, floor, seat});
     const existing = await Reservation.findOne({roomNo, name});
-
+    
     // 중복 좌석 또는 이미 존재하는 사용자의 좌석 변경
-    if(conflict && (!existing || existing._id.toString() !== conflict._id.toString())) 
+    if(conflict && (!existing || existing._id.toString() !== conflict._id.toString()))
       return res.status(409).json({message:'선택하신 좌석은 이미 예약되어 있습니다.'});
-
+    
     if(existing){ // 기존 사용자 - 예약 변경
       const match = await bcrypt.compare(password, existing.password);
       if(!match) return res.status(401).json({message:'비밀번호가 일치하지 않습니다.'});
@@ -236,7 +307,7 @@ app.post('/api/reservations', limiter, async (req,res) => {
 app.delete('/api/reservations/all', async(req, res)=>{
   const {adminUsername, adminPassword} = req.body; // 관리자 이름과 비밀번호를 모두 받음
   const clientIp = req.ip;
-
+  
   // 관리자 이름 및 비밀번호 검증
   if(!adminUsername || !ADMIN_USERNAMES.includes(adminUsername)) {
     console.log(`모든 예약 취소 실패 (권한 없음 - ${adminUsername || '미지정'}), IP: ${clientIp}`);
@@ -246,7 +317,7 @@ app.delete('/api/reservations/all', async(req, res)=>{
     console.log(`모든 예약 취소 실패 (관리자 비밀번호 불일치 - ${adminUsername}), IP: ${clientIp}`);
     return res.status(401).json({success:false, message:'관리자 비밀번호가 틀렸습니다.'});
   }
-
+  
   try{
     await Reservation.deleteMany({}); // 모든 예약 삭제
     console.warn(`[모든 예약 삭제] 관리자(${adminUsername})에 의해 모든 예약이 취소되었습니다. IP: ${clientIp}`);
@@ -264,9 +335,8 @@ app.delete('/api/reservations/:id', async(req, res)=>{
     const {id} = req.params;
     let {password, adminUsername} = req.body;
     const clientIp = req.ip;
-
     const isAdmin = adminUsername && ADMIN_USERNAMES.includes(adminUsername);
-
+    
     if(isAdmin){ // 관리자 권한으로 삭제 요청
       const reservation = await Reservation.findById(id);
       if(!reservation) return res.status(404).json({message:'예약을 찾을 수 없습니다.'});
@@ -276,7 +346,7 @@ app.delete('/api/reservations/:id', async(req, res)=>{
       io.emit('reservationsUpdated', allReservations); // 실시간 업데이트 알림
       return res.json({success:true, message:`관리자(${adminUsername})가 예약을 취소했습니다.`});
     }
-
+    
     // 관리자 권한이 없거나, adminUsername이 유효하지 않을 경우: 예약자 비밀번호 검증 필요
     if(!password) return res.status(400).json({message:'예약 비밀번호를 입력해주세요.'});
     const reservation = await Reservation.findById(id);
@@ -313,14 +383,14 @@ app.get('/api/admin-settings', async (req,res) => {
 app.put('/api/admin-settings', async (req,res) => {
   const { reservationStartTime, reservationEndTime, adminUsername, adminPassword } = req.body;
   const clientIp = req.ip;
-
+  
   if(!adminUsername || !adminPassword)
     return res.status(400).json({message:'관리자 이름과 비밀번호를 입력해주세요.'});
   if(!ADMIN_USERNAMES.includes(adminUsername))
     return res.status(403).json({message:'허가되지 않은 관리자입니다.'});
   if(adminPassword !== ADMIN_PASSWORD) // 평문 비밀번호 비교
     return res.status(401).json({message:'관리자 비밀번호가 틀렸습니다.'});
-
+  
   try{
     const settings = await AdminSetting.findOneAndUpdate(
       {key:'reservationTimes'},
@@ -355,14 +425,14 @@ app.get('/api/announcement', async (req,res) => {
 app.put('/api/announcement', async (req,res) => {
   const {message, active, adminUsername, adminPassword} = req.body;
   const clientIp = req.ip;
-
+  
   if(!adminUsername || !adminPassword)
     return res.status(400).json({message:'관리자 이름과 비밀번호가 필요합니다.'});
   if(!ADMIN_USERNAMES.includes(adminUsername))
     return res.status(403).json({message:'허가되지 않은 관리자입니다.'});
   if(adminPassword !== ADMIN_PASSWORD)
     return res.status(401).json({message:'비밀번호가 틀렸습니다.'});
-
+  
   try{
     const announcement = await Announcement.findOneAndUpdate(
       {key:'currentAnnouncement'},
@@ -397,14 +467,14 @@ app.get('/api/admin-announcement', async (req,res) => {
 app.put('/api/admin-announcement', async (req,res) => {
   const {message, active, adminUsername, adminPassword} = req.body;
   const clientIp = req.ip;
-
+  
   if(!adminUsername || !adminPassword)
     return res.status(400).json({message:'관리자 이름과 비밀번호가 필요합니다.'});
   if(!ADMIN_USERNAMES.includes(adminUsername))
     return res.status(403).json({message:'허가되지 않은 관리자입니다.'});
   if(adminPassword !== ADMIN_PASSWORD)
     return res.status(401).json({message:'비밀번호가 틀렸습니다.'});
-
+  
   try{
     const announcement = await AdminOnlyAnnouncement.findOneAndUpdate(
       {key:'adminOnlyAnnouncement'},
@@ -425,14 +495,14 @@ app.post('/api/admin/reservations/:id/view-plain-password', async (req,res) => {
   const {id} = req.params;
   const {adminPassword, adminUsername} = req.body;
   const clientIp = req.ip;
-
-  if(!adminPassword || !adminUsername) 
+  
+  if(!adminPassword || !adminUsername)
     return res.status(400).json({success:false, message:'관리자 이름과 비밀번호를 입력해주세요.'});
-  if(adminPassword !== ADMIN_PASSWORD) 
+  if(adminPassword !== ADMIN_PASSWORD)
     return res.status(401).json({success:false,message:'관리자 비밀번호가 틀렸습니다.'});
-  if(!ADMIN_USERNAMES.includes(adminUsername)) 
+  if(!ADMIN_USERNAMES.includes(adminUsername))
     return res.status(403).json({message:'권한이 없습니다.'});
-
+  
   try{
     const reservation = await Reservation.findById(id).select('plainPassword name roomNo dormitory floor seat');
     if(!reservation) return res.status(404).json({success:false, message:'예약을 찾을 수 없습니다.'});
@@ -459,6 +529,7 @@ io.on('connection', async (socket)=>{
   }catch(e){
     console.error('초기 데이터 전송 실패:', e);
   }
+  
   socket.on('disconnect', () => {
     console.log(`클라이언트 연결 종료: ${socket.id}`);
   });
